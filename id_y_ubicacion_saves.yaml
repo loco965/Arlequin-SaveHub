@@ -84068,25 +84068,3 @@
     steam: 1997230
   save_locations:
   - <winAppData>/LocalLow/FIFTHD/Lightworkers01 [os=windows]
-- name: The Spell Brigade
-  ids:
-    steam: 2904000
-  save_locations:
-  - <home>/AppData/LocalLow/BoltBlasterGames/TheSpellBrigade/*.es3 [os=windows]
-  - <home>/AppData/LocalLow/BoltBlasterGames/TheSpellBrigade/*.bac [os=windows]
-  - <home>/AppData/LocalLow/BoltBlasterGames/TheSpellBrigade/save_* [os=windows]
-- name: F1 24
-  ids:
-    steam: 2488620
-  save_locations:
-  - <root>/userdata/<storeUserId>/2488620/remote/ [os=windows, store=steam]
-- name: Risk of Rain 2
-  ids:
-    steam: 632360
-  save_locations:
-  - <root>/userdata/<storeUserId>/632360/remote/UserProfiles/ [os=windows, store=steam]
-- name: ARC Raiders
-  ids:
-    steam: 1808500
-  save_locations:
-  - <winLocalAppData>/PioneerGame/Saved/SaveGames/*.sav [os=windows]
