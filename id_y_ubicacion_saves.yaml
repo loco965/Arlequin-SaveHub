@@ -84090,8 +84090,3 @@
     steam: 1808500
   save_locations:
   - <winLocalAppData>/PioneerGame/Saved/SaveGames/*.sav [os=windows]
-- name: OPUS: Prism Peak
-  ids:
-    steam: 1947910
-  save_locations:
-  - <home>/AppData/LocalLow/SIGONO/OPUS_ Prism Peak/SaveData/ [os=windows]
