@@ -84002,3 +84002,58 @@
     gog: 1572922743
   save_locations:
   - <home>/Saved Games/FALCOM/ZWEI2P [os=windows]
+- name: 'ProStroke Golf: World Tour 2007'
+  save_locations:
+  - <winProgramData>/ProStroke Golf/SaveData [os=windows]
+- name: PROTOCORE
+  ids:
+    steam: 906820
+  save_locations:
+  - <winLocalAppData>/YUM/Saved/SaveGames [os=windows]
+- name: Prototype
+  ids:
+    steam: 10150
+    lutris: prototype
+  save_locations:
+  - <winDocuments>/Prototype/slot-*.bin [os=windows]
+- name: Prototype 2
+  ids:
+    steam: 115320
+    lutris: prototype-2
+    steamExtra:
+    - 115340
+  save_locations:
+  - <winDocuments>/Activision/Prototype 2 [os=windows]
+- name: Prototypers
+  ids:
+    steam: 2058980
+  save_locations:
+  - <winAppData>/MOB_OPS [os=windows]
+- name: Proverbs
+  ids:
+    steam: 3083300
+    lutris: proverbs
+  save_locations:
+  - <home>/AppData/LocalLow/Divide The Plunder Limited/Proverbs [os=windows]
+- name: Proxy - Ultimate Hacker
+  ids:
+    steam: 528860
+  save_locations:
+  - <home>/AppData/LocalLow/ReadyPlayGames/Proxy/Players [os=windows]
+- name: Psebay
+  ids:
+    steam: 608660
+  save_locations:
+  - <winLocalAppData>/Psebay [os=windows]
+- name: Pseudoregalia
+  ids:
+    steam: 2365810
+    lutris: pseudoregalia
+  save_locations:
+  - <winLocalAppData>/pseudoregalia/Saved/SaveGames/File *.sav [os=windows]
+- name: 'Psi-Ops: The Mindgate Conspiracy'
+  save_locations:
+  - <base>/save [os=windows]
+- name: 'PSI: Syberian Conflict'
+  save_locations:
+  - <base>/game/saves [os=windows]
