@@ -1,5 +1,5 @@
 {
   "version": "1.0.2",
   "url_descarga": "https://github.com/loco965/Arlequin-SaveHub/releases/latest/download/Arlequin_SaveHub.exe",
-  "novedades": "Soporte para carpetas de sistema (Saved Games), selector manual para múltiples backups y verificación de permisos de administrador."
+  "novedades": "- Añadido selector con flechas (Spinbox) para limitar las copias históricas por juego.\n- Borrado automático de backups viejos para ahorrar espacio en disco.\n- Descargas 80% más rápidas usando compresión Gzip en memoria.\n- Sistema ETag para evitar descargas repetidas (consumo de 0 bytes si no hay cambios)."
 }
