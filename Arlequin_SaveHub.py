@@ -16,12 +16,18 @@ Cambio principal respecto a la versión anterior:
 """
 
 import os
+import sys
 import re
 import json
 import time
 import shutil
 import threading
 import webbrowser
+import subprocess
+import logging
+import uuid
+from datetime import datetime
+from difflib import SequenceMatcher
 import urllib.request
 import tkinter as tk
 from tkinter import messagebox as mb
@@ -61,6 +67,18 @@ UP = os.environ.get('USERPROFILE', os.path.expanduser('~')).replace("\\", "/")
 M_O = os.path.join(APP_GAMESAVES_DIR, "juegos_ocultos.txt").replace("\\", "/")
 M_M = os.path.join(APP_GAMESAVES_DIR, "juegos_manuales.txt").replace("\\", "/")
 M_C = os.path.join(APP_GAMESAVES_DIR, "carpetas_sin_launcher.txt").replace("\\", "/")
+LOG_FILE = os.path.join(APP_GAMESAVES_DIR, "app.log").replace("\\", "/")
+
+# ---------------------------------------------------------------------------
+#  ICONO DE LA APLICACIÓN (barra de título + barra de tareas de Windows)
+# ---------------------------------------------------------------------------
+# getattr(sys, "_MEIPASS", ...) es la carpeta temporal donde PyInstaller
+# descomprime los recursos cuando el programa se ejecuta como un .exe
+# empaquetado con --onefile. Si no existe (ejecución normal del .py), se usa
+# la carpeta donde vive este propio script. Así "icono.ico" se encuentra
+# tanto en desarrollo como una vez compilado, sin tocar nada.
+_BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+ICON_PATH = os.path.join(_BASE_DIR, "icono.ico").replace("\\", "/")
 
 # ---------------------------------------------------------------------------
 #  BASE DE DATOS DE RUTAS DE SAVES (base propia de Arlequin-SaveHub)
@@ -81,9 +99,129 @@ M_C = os.path.join(APP_GAMESAVES_DIR, "carpetas_sin_launcher.txt").replace("\\",
 # faltan, la ruta se considera válida siempre. Varios valores de la misma
 # clave (p. ej. "os=windows, os=linux") son un OR; claves distintas dentro
 # del mismo corchete son un AND.
-MANIFEST_URL = ("https://raw.githubusercontent.com/loco965/Arlequin-SaveHub/refs/heads/main/id%20y%20ubicacion%20saves.yaml")
-MANIFEST_CACHE = os.path.join(APP_GAMESAVES_DIR, "arlequin_savehub_saves.yaml").replace("\\", "/")
+MANIFEST_URL = ("https://raw.githubusercontent.com/loco965/Arlequin-SaveHub/refs/heads/main/id_y_ubicacion_saves.yaml")
+MANIFEST_CACHE = os.path.join(APP_GAMESAVES_DIR, "id_y_ubicacion_saves.yaml").replace("\\", "/")
 MANIFEST_MAX_AGE_SEG = 60 * 60 * 24 * 7  # refrescar la caché cada 7 días como máximo
+
+# ---------------------------------------------------------------------------
+#  VERSIÓN Y AUTOACTUALIZACIÓN (contra un version.json en el propio repo)
+# ---------------------------------------------------------------------------
+# Primera versión oficial: ya no es beta.
+APP_VERSION = "1.0.0"
+
+# Debe apuntar a un fichero "version.json" en la raíz del repo con este
+# formato (el mismo que ya tienes preparado):
+#   {
+#     "version": "1.0.1",
+#     "url_descarga": "https://github.com/loco965/Arlequin-SaveHub/releases/latest/download/Arlequin_SaveHub.exe",
+#     "novedades": "Texto que se muestra al usuario"
+#   }
+VERSION_CHECK_URL = ("https://raw.githubusercontent.com/loco965/Arlequin-SaveHub/refs/heads/main/version.json")
+
+
+def _version_a_tupla(texto_version):
+    """Convierte '1.2.10' (o 'v1.2.10') en (1, 2, 10) para poder comparar
+    versiones numéricamente en vez de como texto."""
+    partes = []
+    for trozo in str(texto_version).strip().lstrip("vV").split("."):
+        num = "".join(c for c in trozo if c.isdigit())
+        partes.append(int(num) if num else 0)
+    return tuple(partes) or (0,)
+
+
+def comprobar_actualizacion_disponible():
+    """Consulta VERSION_CHECK_URL. Devuelve el dict remoto (version,
+    url_descarga, novedades) si hay una versión más nueva que APP_VERSION,
+    o None si no hay actualización o si algo falla (sin internet, etc.)."""
+    try:
+        peticion = urllib.request.Request(
+            VERSION_CHECK_URL,
+            headers={"User-Agent": "Arlequin-SaveHub-Updater", "Cache-Control": "no-cache"},
+        )
+        with urllib.request.urlopen(peticion, timeout=8) as resp:
+            datos = json.loads(resp.read().decode("utf-8"))
+        version_remota = str(datos.get("version", "0.0.0"))
+        if _version_a_tupla(version_remota) > _version_a_tupla(APP_VERSION):
+            return datos
+    except Exception as e:
+        logging.info(f"No se pudo comprobar si hay actualizaciones: {e}")
+    return None
+
+
+def descargar_y_aplicar_actualizacion(url_descarga):
+    """Descarga el nuevo .exe indicado en el version.json y, si el programa
+    se está ejecutando ya compilado (PyInstaller --onefile), deja preparado
+    un script que sustituye el .exe actual por el nuevo y vuelve a abrirlo
+    en cuanto este proceso termine. Devuelve True si hay que cerrar la app
+    ahora mismo para que la actualización se complete."""
+    if not getattr(sys, "frozen", False):
+        # Ejecutándose como script .py (modo desarrollo): no hay .exe que
+        # reemplazar, así que solo se abre la página de descarga.
+        mb.showinfo(
+            "Actualización",
+            "Estás ejecutando el código fuente (.py), no el .exe compilado.\n"
+            "Se abrirá el enlace de descarga en el navegador."
+        )
+        webbrowser.open(url_descarga)
+        return False
+
+    exe_actual = sys.executable
+    carpeta = os.path.dirname(exe_actual)
+    nombre_exe_actual = os.path.basename(exe_actual)
+    nuevo_exe = os.path.join(carpeta, "_Arlequin_SaveHub_nuevo.exe")
+
+    try:
+        peticion = urllib.request.Request(
+            url_descarga, headers={"User-Agent": "Arlequin-SaveHub-Updater"})
+        with urllib.request.urlopen(peticion, timeout=60) as resp:
+            with open(nuevo_exe, "wb") as f:
+                shutil.copyfileobj(resp, f)
+    except Exception as e:
+        logging.error(f"Fallo al descargar la actualización: {e}")
+        try:
+            if os.path.exists(nuevo_exe):
+                os.remove(nuevo_exe)
+        except Exception:
+            pass
+        mb.showerror("Actualización", f"No se pudo descargar la actualización:\n{e}")
+        return False
+
+    # Script .bat que espera a que este .exe se cierre (Windows no deja
+    # sobrescribir un .exe en ejecución), lo sustituye por el nuevo y vuelve
+    # a abrir el programa. Se lanza sin ventana de consola visible.
+    bat_path = os.path.join(os.environ.get("TEMP", carpeta), "arlequin_update.bat")
+    contenido_bat = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f'set "VIEJO={exe_actual}"\r\n'
+        f'set "NUEVO={nuevo_exe}"\r\n'
+        ":esperar\r\n"
+        f'tasklist /FI "IMAGENAME eq {nombre_exe_actual}" 2>NUL | find /I "{nombre_exe_actual}" >NUL\r\n'
+        "if not errorlevel 1 (\r\n"
+        "    timeout /t 1 /nobreak >NUL\r\n"
+        "    goto esperar\r\n"
+        ")\r\n"
+        'move /Y "%NUEVO%" "%VIEJO%" >NUL\r\n'
+        'start "" "%VIEJO%"\r\n'
+        'del "%~f0"\r\n'
+    )
+    try:
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(contenido_bat)
+        subprocess.Popen(
+            ["cmd", "/c", bat_path],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+        return True
+    except Exception as e:
+        logging.error(f"Fallo al preparar el relanzamiento automático: {e}")
+        mb.showerror(
+            "Actualización",
+            f"La descarga terminó pero no se pudo reiniciar automáticamente:\n{e}\n\n"
+            f"El nuevo .exe quedó en:\n{nuevo_exe}"
+        )
+        return False
 
 # Cómo se llama cada launcher dentro del campo "store" del manifest de Ludusavi
 LAUNCHER_A_STORE = {
@@ -187,36 +325,70 @@ def descargar_manifest(forzar=False):
             edad = time.time() - os.path.getmtime(MANIFEST_CACHE)
             necesita_descarga = edad > MANIFEST_MAX_AGE_SEG
         if necesita_descarga:
-            peticion = urllib.request.Request(MANIFEST_URL, headers={"User-Agent": "Mozilla/5.0"})
+            # La URL debe apuntar al archivo real del repositorio. Descargamos
+            # primero a un temporal y solo sustituimos la caché cuando la
+            # descarga termina correctamente, para no dejar un YAML corrupto
+            # si se corta la conexión.
+            peticion = urllib.request.Request(
+                MANIFEST_URL,
+                headers={
+                    "User-Agent": "Arlequin-SaveHub/1.0",
+                    "Accept": "text/plain, */*",
+                    "Cache-Control": "no-cache",
+                },
+            )
             with urllib.request.urlopen(peticion, timeout=60) as resp:
                 datos = resp.read()
-            with open(MANIFEST_CACHE, "wb") as f:
+            if not datos or len(datos) < 100:
+                raise ValueError("GitHub devolvió un archivo vacío o incompleto")
+
+            # Comprobación básica antes de reemplazar la caché: el archivo
+            # debe parecer realmente un YAML de fichas con campo "name".
+            if b"name:" not in datos:
+                raise ValueError("La respuesta descargada no parece ser el YAML de juegos esperado")
+
+            os.makedirs(os.path.dirname(MANIFEST_CACHE), exist_ok=True)
+            temporal = MANIFEST_CACHE + ".tmp"
+            with open(temporal, "wb") as f:
                 f.write(datos)
+            os.replace(temporal, MANIFEST_CACHE)
     except Exception:
-        pass  # si falla la descarga (sin internet, etc.) se usa la caché si existe
+        # Si falla la descarga se conserva una caché válida anterior. Si no
+        # existe, la función devolverá {}, 0 y la interfaz informará del fallo.
+        try:
+            if os.path.exists(MANIFEST_CACHE + ".tmp"):
+                os.remove(MANIFEST_CACHE + ".tmp")
+        except Exception:
+            pass
 
     if yaml is None or not os.path.exists(MANIFEST_CACHE):
-        return {}
+        return {}, 0
     try:
         with open(MANIFEST_CACHE, "r", encoding="utf-8") as f:
             datos_yaml = yaml.safe_load(f)
     except Exception:
-        return {}
+        return {}, 0
 
     if isinstance(datos_yaml, dict):
-        # Por si en el futuro se publica como diccionario {nombre: ficha}
-        # en vez de como lista.
-        return datos_yaml or {}
+        # Si el YAML viene como diccionario {nombre: ficha}, cada clave
+        # representa una entrada de juego.
+        return (datos_yaml or {}), len(datos_yaml or {})
 
+    # El número mostrado en la interfaz debe corresponder a la cantidad
+    # real de fichas de juegos que contiene el YAML, no a len(manifest).
+    # Esto es importante porque el diccionario puede eliminar duplicados
+    # de nombre al indexarlo.
     manifest = {}
+    total_juegos = 0
     for ficha in datos_yaml or []:
         if not isinstance(ficha, dict):
             continue
         nombre_juego = ficha.get("name")
         if not nombre_juego:
             continue
+        total_juegos += 1
         manifest[nombre_juego] = ficha
-    return manifest
+    return manifest, total_juegos
 
 
 def construir_indices_manifest(manifest):
@@ -749,6 +921,21 @@ def detectar_juegos_carpetas_raiz(carpetas_raiz):
 # ---------------------------------------------------------------------------
 
 class GestorPartidasLocal:
+    def _formatear_bytes(self, num_bytes):
+        """Convierte bytes a una unidad legible para mostrar tamaños en la UI."""
+        try:
+            n = float(num_bytes or 0)
+        except (TypeError, ValueError):
+            n = 0.0
+        unidades = ("B", "KB", "MB", "GB", "TB", "PB")
+        i = 0
+        while abs(n) >= 1024.0 and i < len(unidades) - 1:
+            n /= 1024.0
+            i += 1
+        if i == 0:
+            return f"{int(n)} {unidades[i]}"
+        return f"{n:.2f} {unidades[i]}"
+
     def abrir_carpeta_backups(self):
         if not os.path.exists(self.dest):
             os.makedirs(self.dest, exist_ok=True)
@@ -760,6 +947,20 @@ class GestorPartidasLocal:
             self.dest = r
             self.lbl_r.config(text=f"Guardando en: {self.dest}")
 
+    def aplicar_icono_ventana(self, ventana):
+        """Pone icono.ico en la barra de título de la ventana. En Windows,
+        iconbitmap también es lo que usa la barra de tareas para esa misma
+        ventana (el ajuste de identidad de la app para que no comparta el
+        icono genérico de python.exe se hace aparte, ver
+        _fijar_identidad_taskbar_windows() al arrancar el programa)."""
+        try:
+            if os.path.exists(ICON_PATH):
+                ventana.iconbitmap(default=ICON_PATH)
+            else:
+                self._log("WARNING", f"No se encontró icono.ico junto al programa ({ICON_PATH}).")
+        except Exception as e:
+            self._log("WARNING", f"No se pudo aplicar el icono de la ventana: {e}")
+
     def centrar_ventana(self, ventana, ancho, alto):
         pantalla_ancho = ventana.winfo_screenwidth()
         pantalla_alto = ventana.winfo_screenheight()
@@ -768,7 +969,28 @@ class GestorPartidasLocal:
         ventana.geometry(f"{ancho}x{alto}+{x}+{y}")
 
     def ejecutar_en_hilo(self, funcion):
-        hilo = threading.Thread(target=funcion, daemon=True)
+        """Ejecuta una tarea de fondo, evitando que dos operaciones pesadas
+        (escaneo/BD/backup/restauración) se pisen entre sí."""
+        def trabajador():
+            # Espera a que termine la operación anterior en vez de ejecutar
+            # dos escaneos/copias simultáneamente.
+            self._worker_lock.acquire()
+            try:
+                self._log("INFO", "Inicio de tarea: %s", getattr(funcion, "__name__", repr(funcion)))
+                funcion()
+                self._log("INFO", "Fin de tarea: %s", getattr(funcion, "__name__", repr(funcion)))
+            except Exception as exc:
+                self._log("ERROR", "Error en tarea: %s", exc, exc_info=True)
+                try:
+                    self.root.after(0, lambda e=str(exc): mb.showerror(
+                        "Error", f"La operación terminó con un error:\n\n{e}"
+                    ))
+                except Exception:
+                    pass
+            finally:
+                self._worker_lock.release()
+
+        hilo = threading.Thread(target=trabajador, daemon=True)
         hilo.start()
 
     def abrir_link_donar(self):
@@ -810,57 +1032,343 @@ class GestorPartidasLocal:
             res = " (".join(partes[:-1])
         return res.strip()
 
+    def _normalizar_nombre_ruta(self, texto):
+        """Normaliza un nombre de carpeta para poder compararlo con el nombre del juego."""
+        try:
+            return _norm(os.path.basename(str(texto).rstrip("/\\")))
+        except Exception:
+            return str(texto).strip().lower()
+
+    def _grupo_backup_y_relativo(self, origen, nombre_juego_limpio):
+        """
+        Determina la ruta relativa del save dentro de Backup Saves.
+
+        La carpeta del juego es SIEMPRE la unidad que se versiona. Por ejemplo:
+
+            .../My Games/Borderlands 2/WillowGame/SaveData
+
+        queda como:
+
+            Backup Saves/My Games/Borderlands 2/WillowGame/SaveData
+
+        De esta forma, cuando se hace un backup nuevo, se renombra la carpeta
+        completa "Borderlands 2" y no "SaveData" o "WillowGame".
+        """
+        so = origen if os.path.isabs(origen) else os.path.join(UP, origen)
+        so = os.path.normpath(so).replace("\\", "/")
+        nombre_norm = _norm(nombre_juego_limpio)
+        partes = [p for p in so.replace("\\", "/").split("/") if p]
+
+        indice_juego = None
+        for i in range(len(partes) - 1, -1, -1):
+            if _norm(partes[i]) == nombre_norm:
+                indice_juego = i
+                break
+
+        if indice_juego is not None:
+            nombre_juego = partes[indice_juego]
+            grupo = partes[indice_juego - 1] if indice_juego > 0 else "Otros"
+            resto = partes[indice_juego + 1:]
+            return "/".join([grupo, nombre_juego] + resto)
+
+        # Cuando el nombre del juego no forma parte de la ruta real, mantenemos
+        # el comportamiento anterior: agrupamos por la carpeta padre inmediata.
+        nombre_origen = partes[-1] if partes else nombre_juego_limpio
+        grupo = partes[-2] if len(partes) >= 2 else "Otros"
+        return "/".join([grupo, nombre_juego_limpio, nombre_origen])
+
+    def _backup_game_root(self, origen, nombre_juego_limpio):
+        """Devuelve la carpeta raíz versionable del juego.
+
+        Ejemplo:
+            .../My Games/Borderlands 2/WillowGame/SaveData
+            -> Backup Saves/My Games/Borderlands 2
+        """
+        rel = self._grupo_backup_y_relativo(origen, nombre_juego_limpio)
+        partes = [p for p in rel.replace("\\", "/").split("/") if p]
+        if len(partes) >= 2:
+            return os.path.join(self.dest, partes[0], partes[1]).replace("\\", "/")
+        return os.path.join(self.dest, partes[0] if partes else nombre_juego_limpio).replace("\\", "/")
+
     def r_path(self, orig, nombre_juego_limpio):
         so = orig if os.path.isabs(orig) else os.path.join(UP, orig).replace("\\", "/")
-        ultimo_directorio = os.path.basename(so)
-        if ultimo_directorio.lower() == nombre_juego_limpio.lower():
-            sub = nombre_juego_limpio
-        else:
-            sub = os.path.join(nombre_juego_limpio, ultimo_directorio)
-        return os.path.join(self.dest, sub).replace("\\", "/"), so
+        rel = self._grupo_backup_y_relativo(so, nombre_juego_limpio)
+        return os.path.join(self.dest, *rel.split("/")).replace("\\", "/"), so
 
-    def check_bkp(self, folder):
-        return folder.lower().strip() in self.backups_existentes
+    def check_bkp(self, folder, rutas=None):
+        """Comprueba si existe el backup agrupado correspondiente al juego.
+
+        También reconoce backups antiguos en la raíz de Backup Saves para no
+        romper instalaciones existentes que todavía no hayan sido reubicadas.
+        """
+        nombre = str(folder).lower().strip()
+
+        if rutas:
+            if isinstance(rutas, str):
+                rutas = [rutas]
+            for ruta in rutas:
+                try:
+                    esperado, ruta_origen = self.r_path(ruta, folder)
+                    if os.path.isdir(esperado):
+                        return True
+
+                    # Si desapareció la carpeta activa, seguimos considerando
+                    # disponible la copia histórica más reciente.
+                    game_root = self._backup_game_root(ruta_origen, folder)
+                    historico = self._buscar_backup_historico_mas_reciente(game_root)
+                    if historico:
+                        rel = os.path.relpath(esperado, game_root)
+                        candidato = historico if rel == "." else os.path.join(historico, rel)
+                        if os.path.isdir(candidato):
+                            return True
+                except Exception:
+                    continue
+
+        # Compatibilidad con el formato antiguo: Backup Saves/Juego
+        if nombre in getattr(self, "backups_existentes", set()):
+            return True
+
+        # Si el índice contiene rutas agrupadas, comprobamos el último componente.
+        for rel in getattr(self, "backups_existentes", set()):
+            if str(rel).replace("\\", "/").rstrip("/").split("/")[-1].lower() == nombre:
+                return True
+        return False
+
+    def _log(self, nivel, mensaje, *args, exc_info=False):
+        """Escribe en el log sin permitir que un fallo de logging rompa la app."""
+        try:
+            logger = getattr(self, "_logger", None)
+            if logger:
+                getattr(logger, nivel.lower())(mensaje, *args, exc_info=exc_info)
+        except Exception:
+            pass
 
     def run_cmd(self, o, d):
-        if os.path.isdir(o):
-            os.makedirs(d, exist_ok=True)
-            os.system(f'robocopy "{o}" "{d}" /E /R:1 /W:1 /NFL /NDL /NJH /NJS')
-        elif os.path.isfile(o):
-            os.makedirs(os.path.dirname(d), exist_ok=True)
-            dir_o, file_o = os.path.split(o)
-            dir_d = d if os.path.isdir(d) else os.path.dirname(d)
-            os.system(f'robocopy "{dir_o}" "{dir_d}" "{file_o}" /R:1 /W:1 /NFL /NDL /NJH /NJS')
+        """Copia o->d usando robocopy y devuelve True solo si la copia fue válida."""
+        if not o or not os.path.exists(o):
+            self._log("WARNING", "Origen inexistente: %s", o)
+            return False
+
+        try:
+            if os.path.isdir(o):
+                os.makedirs(d, exist_ok=True)
+                cmd = [
+                    "robocopy", o, d, "/E", "/R:1", "/W:1",
+                    "/NFL", "/NDL", "/NJH", "/NJS", "/NP"
+                ]
+            elif os.path.isfile(o):
+                parent = os.path.dirname(d) or d
+                os.makedirs(parent, exist_ok=True)
+                dir_o, file_o = os.path.split(o)
+                dir_d = d if os.path.isdir(d) else os.path.dirname(d)
+                os.makedirs(dir_d, exist_ok=True)
+                cmd = [
+                    "robocopy", dir_o, dir_d, file_o, "/R:1", "/W:1",
+                    "/NFL", "/NDL", "/NJH", "/NJS", "/NP"
+                ]
+            else:
+                return False
+
+            self._log("INFO", "Copiando: %s -> %s", o, d)
+            resultado = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="cp437", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+            # Robocopy: 0..7 son resultados no fatales; >=8 es fallo.
+            ok = resultado.returncode < 8
+            if not ok:
+                self._log("ERROR", "Robocopy falló (%s): %s",
+                          resultado.returncode, resultado.stderr.strip() or resultado.stdout.strip())
+                return False
+
+            if not os.path.exists(d):
+                self._log("ERROR", "Robocopy terminó bien pero el destino no existe: %s", d)
+                return False
+
+            origen_tam = self._folder_size_bytes(o)
+            destino_tam = self._folder_size_bytes(d)
+            if origen_tam != destino_tam:
+                self._log("ERROR", "Verificación de tamaño fallida: %s (%s) != %s (%s)",
+                          o, origen_tam, d, destino_tam)
+                return False
+
+            self._log("INFO", "Copia verificada correctamente: %s -> %s", o, d)
+            return True
+        except FileNotFoundError:
+            self._log("ERROR", "No se encontró robocopy. Solo está disponible normalmente en Windows.")
+            return False
+        except Exception as exc:
+            self._log("ERROR", "Error copiando %s -> %s: %s", o, d, exc, exc_info=True)
+            return False
+
+    def _formatear_fecha_es(self, instante=None, separador=" "):
+        """Devuelve una fecha visible en formato español: DD-MM-YYYY HH-MM-SS."""
+        if instante is None:
+            instante = time.time()
+        try:
+            return time.strftime("%d-%m-%Y %H-%M-%S", time.localtime(instante))
+        except Exception:
+            return "fecha-desconocida"
+
+    def _parsear_fecha_backup_historico(self, texto):
+        """Convierte una fecha de nombre de backup a timestamp.
+
+        El único formato de backups históricos utilizado por esta versión es
+        el formato español: DD-MM-YYYY HH-MM-SS.
+        """
+        texto = str(texto).strip()
+        try:
+            return datetime.strptime(texto, "%d-%m-%Y %H-%M-%S").timestamp()
+        except (ValueError, OverflowError, OSError):
+            return None
+
+    def _es_backup_historico_con_fecha(self, nombre):
+        """Indica si una carpeta corresponde a un backup histórico fechado.
+
+        Formato: "Juego [DD-MM-YYYY HH-MM-SS]".
+        """
+        try:
+            patron = r"\s\[\d{2}-\d{2}-\d{4}\s\d{2}-\d{2}-\d{2}(?:\s+#\d+)?\]$"
+            return bool(re.search(patron, str(nombre).strip(), re.I))
+        except Exception:
+            return False
+
+    def _nombre_backup_historico(self, dst_actual):
+        """Genera el nombre histórico usando la fecha de modificación del backup.
+
+        La fecha corresponde al backup que se está sustituyendo, no al momento
+        en que se pulsa el botón. Se muestra en formato español:
+        "DD-MM-YYYY HH-MM-SS".
+        """
+        base = os.path.basename(os.path.normpath(dst_actual))
+        try:
+            instante = os.path.getmtime(dst_actual)
+        except (OSError, ValueError):
+            instante = time.time()
+
+        fecha = self._formatear_fecha_es(instante)
+        nombre = f"{base} [{fecha}]"
+        destino = os.path.join(os.path.dirname(dst_actual), nombre)
+
+        contador = 2
+        while os.path.exists(destino):
+            nombre = f"{base} [{fecha} #{contador}]"
+            destino = os.path.join(os.path.dirname(dst_actual), nombre)
+            contador += 1
+        return destino.replace("\\", "/")
+
+    def _buscar_backup_historico_mas_reciente(self, game_root):
+        """Busca la versión histórica más reciente de un juego.
+
+        Se usa como respaldo cuando la carpeta activa (con el nombre limpio)
+        ya no existe. La elección se hace por la fecha escrita en el nombre,
+        no por la fecha de modificación de Windows, para que el resultado sea
+        estable y visible para el usuario.
+        """
+        if not game_root:
+            return None
+
+        game_root = os.path.normpath(game_root).replace("\\", "/")
+        padre = os.path.dirname(game_root)
+        base = os.path.basename(game_root)
+        if not os.path.isdir(padre):
+            return None
+
+        candidatos = []
+        prefijo = f"{base} ["
+        try:
+            for nombre in os.listdir(padre):
+                ruta = os.path.join(padre, nombre)
+                if not os.path.isdir(ruta):
+                    continue
+                if not nombre.startswith(prefijo):
+                    continue
+
+                m = re.match(
+                    rf"^{re.escape(base)} \["
+                    rf"(\d{{2}}-\d{{2}}-\d{{4}}\s\d{{2}}-\d{{2}}-\d{{2}})"
+                    rf"(?:\s+#\d+)?\]$",
+                    nombre,
+                    re.I
+                )
+                if not m:
+                    continue
+
+                instante = self._parsear_fecha_backup_historico(m.group(1))
+                if instante is None:
+                    continue
+                candidatos.append((instante, nombre.lower(), ruta.replace("\\", "/")))
+
+        except Exception as exc:
+            self._log("ERROR", "No se pudieron buscar backups históricos de %s: %s",
+                      game_root, exc, exc_info=True)
+            return None
+
+        if not candidatos:
+            return None
+
+        candidatos.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        elegido = candidatos[0][2]
+        self._log(
+            "WARNING",
+            "No existe el backup activo %s; se utilizará la copia histórica más reciente: %s",
+            game_root, elegido
+        )
+        return elegido
 
     def rotar_a_old(self, dst_actual):
-        if os.path.exists(dst_actual):
-            rel = os.path.relpath(dst_actual, self.dest)
-            contador = 1
-            while True:
-                nombre_old = "old" if contador == 1 else f"old{contador}"
-                camino_old = os.path.join(self.dest, nombre_old, rel).replace("\\", "/")
-                if not os.path.exists(camino_old):
-                    break
-                contador += 1
-            os.makedirs(os.path.dirname(camino_old), exist_ok=True)
-            try:
-                shutil.move(dst_actual, camino_old)
-            except Exception:
-                pass
+        """Archiva el backup actual junto a su backup activo, con fecha y hora.
+
+        El backup más reciente conserva siempre el nombre original del juego:
+            My Games/Borderlands 2
+
+        Cuando se crea uno nuevo, el anterior pasa a ser, por ejemplo:
+            My Games/Borderlands 2 [2026-09-26 03-20-15]
+
+        Esto permite distinguir rápidamente versiones antiguas sin llenar la
+        raíz de "Backup Saves" con carpetas old, old2, old3, etc.
+        """
+        if not os.path.exists(dst_actual):
+            return None
+
+        camino_historico = self._nombre_backup_historico(dst_actual)
+        try:
+            os.makedirs(os.path.dirname(camino_historico), exist_ok=True)
+            shutil.move(dst_actual, camino_historico)
+            self._log(
+                "INFO",
+                "Backup anterior archivado con fecha: %s -> %s",
+                dst_actual, camino_historico
+            )
+            return camino_historico
+        except Exception as exc:
+            self._log(
+                "ERROR",
+                "No se pudo archivar backup %s: %s",
+                dst_actual, exc, exc_info=True
+            )
+            return False
 
     def rotar_original_en_pc(self, ruta_original_pc):
-        if os.path.exists(ruta_original_pc):
-            contador = 1
-            while True:
-                sufijo = "_old" if contador == 1 else f"_old{contador}"
-                nueva_ruta_old = ruta_original_pc.rstrip("/") + sufijo
-                if not os.path.exists(nueva_ruta_old):
-                    break
-                contador += 1
-            try:
-                shutil.move(ruta_original_pc, nueva_ruta_old)
-            except Exception:
-                pass
+        """Mueve el save original a _old/_old2/... y devuelve si tuvo éxito."""
+        if not os.path.exists(ruta_original_pc):
+            return None
+        contador = 1
+        while True:
+            sufijo = "_old" if contador == 1 else f"_old{contador}"
+            nueva_ruta_old = ruta_original_pc.rstrip("/\\") + sufijo
+            if not os.path.exists(nueva_ruta_old):
+                break
+            contador += 1
+        try:
+            shutil.move(ruta_original_pc, nueva_ruta_old)
+            self._log("INFO", "Save original archivado: %s -> %s", ruta_original_pc, nueva_ruta_old)
+            return nueva_ruta_old
+        except Exception as exc:
+            self._log("ERROR", "No se pudo archivar save original %s: %s",
+                      ruta_original_pc, exc, exc_info=True)
+            return False
 
     def mostrar_submenu_ocultos(self):
         if not self.ocultos:
@@ -1034,29 +1542,39 @@ class GestorPartidasLocal:
                   fg="white", font=("Arial", 10, "bold"), bd=0, pady=8, cursor="hand2").pack(fill="x", padx=15, pady=(0, 15))
 
     def _folder_size_bytes(self, path):
-        """Devuelve el tamaño en bytes de 'path' (0 si no existe o falla)."""
+        """Devuelve el tamaño en bytes. Usa una caché breve para no recorrer
+        repetidamente carpetas grandes durante cada refresco de la interfaz."""
         if not path or not os.path.exists(path):
             return 0
-        total_size = 0
         try:
+            clave = os.path.normcase(os.path.abspath(path))
+            ahora = time.monotonic()
+            try:
+                marca = os.path.getmtime(path)
+            except OSError:
+                marca = 0
+            cache = getattr(self, "_size_cache", {})
+            anterior = cache.get(clave)
+            if anterior and ahora - anterior[0] < 5 and anterior[1] == marca:
+                return anterior[2]
+
+            total_size = 0
             if os.path.isdir(path):
                 for dirpath, dirnames, filenames in os.walk(path):
                     for f in filenames:
                         fp = os.path.join(dirpath, f)
-                        if os.path.exists(fp):
+                        try:
                             total_size += os.path.getsize(fp)
+                        except (OSError, PermissionError):
+                            continue
             else:
                 total_size = os.path.getsize(path)
+
+            cache[clave] = (ahora, marca, total_size)
+            self._size_cache = cache
+            return total_size
         except Exception:
             return 0
-        return total_size
-
-    def _formatear_bytes(self, total_size):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if total_size < 1024.0:
-                return f"{total_size:.2f} {unit}"
-            total_size /= 1024.0
-        return f"{total_size:.2f} TB"
 
     def get_folder_size_str(self, path):
         if not path or not os.path.exists(path):
@@ -1079,51 +1597,268 @@ class GestorPartidasLocal:
     def op(self, mode):
         lista_seleccionados = self.get_sel_list()
         if not lista_seleccionados:
-            mb.showwarning("Atención", "Por favor, selecciona uno o varios elementos de la lista haciendo clic sobre ellos.")
+            self.root.after(0, lambda: mb.showwarning(
+                "Atención",
+                "Por favor, selecciona uno o varios elementos de la lista haciendo clic sobre ellos."
+            ))
             return
-        c = 0
+
+        exitosas = 0
+        fallidas = []
+        total_juegos = 0
+
         for tag_seleccionado in lista_seleccionados:
-            if tag_seleccionado in self.juegos:
-                origen = self.juegos[tag_seleccionado]
-                if not origen:  # juego instalado sin carpeta de saves localizada
-                    continue
-                # Un mismo juego puede tener varias carpetas de save reales
-                # (duplicados fusionados en una sola línea de la lista). Se
-                # respaldan/restauran TODAS, pero cuentan como 1 sola partida.
-                origenes = [origen] if isinstance(origen, str) else list(origen)
-                nombre_limpio = self.limpiar_nombre_juego(tag_seleccionado)
-                se_hizo_algo = False
+            if tag_seleccionado not in self.juegos:
+                continue
+            origen = self.juegos[tag_seleccionado]
+            if not origen:
+                continue
+
+            origenes = [origen] if isinstance(origen, str) else list(origen)
+            nombre_limpio = self.limpiar_nombre_juego(tag_seleccionado)
+            total_juegos += 1
+            juego_ok = True
+
+            # -----------------------------------------------------------------
+            # BACKUP
+            # -----------------------------------------------------------------
+            if mode == 1:
+                # Agrupamos los orígenes por carpeta de juego. Esto es importante
+                # para que una nueva copia renombre "Borderlands 2" completo y
+                # NO una subcarpeta como "SaveData" o "WillowGame".
+                grupos = {}
                 for orig in origenes:
-                    dst, _ = self.r_path(orig, nombre_limpio)
-                    if mode == 1:
-                        if os.path.exists(orig):
-                            self.rotar_a_old(dst)
-                            self.run_cmd(orig, dst)
-                            se_hizo_algo = True
-                    elif mode == 2:
-                        if os.path.exists(dst):
-                            self.rotar_original_en_pc(orig)
-                            self.run_cmd(dst, orig)
-                            se_hizo_algo = True
-                if se_hizo_algo:
-                    c += 1
+                    if not orig:
+                        juego_ok = False
+                        continue
+                    ruta_real = orig if os.path.isabs(orig) else os.path.join(UP, orig)
+                    ruta_real = os.path.normpath(ruta_real).replace("\\", "/")
+                    if not os.path.exists(ruta_real):
+                        fallidas.append(f"{nombre_limpio}: origen no existe ({ruta_real})")
+                        juego_ok = False
+                        continue
+                    dst, ruta_real = self.r_path(ruta_real, nombre_limpio)
+                    game_root = self._backup_game_root(ruta_real, nombre_limpio)
+                    grupos.setdefault(game_root, []).append((ruta_real, dst))
+
+                for game_root, elementos in grupos.items():
+                    if not juego_ok and not elementos:
+                        continue
+
+                    tmp_root = game_root + f".__tmp_game_{uuid.uuid4().hex[:8]}"
+                    antiguo_backup = None
+                    try:
+                        if os.path.exists(tmp_root):
+                            shutil.rmtree(tmp_root, ignore_errors=True)
+
+                        # Primero construimos el backup COMPLETO en una carpeta
+                        # temporal. Así nunca dejamos un backup a medias.
+                        for ruta_real, dst in elementos:
+                            rel = os.path.relpath(dst, game_root)
+                            tmp_dst = os.path.join(tmp_root, rel).replace("\\", "/")
+                            if not self.run_cmd(ruta_real, tmp_dst):
+                                raise RuntimeError(f"fallo copiando {ruta_real}")
+
+                        # Solo después de verificar todas las fuentes se archiva
+                        # la versión anterior completa del juego.
+                        antiguo_backup = self.rotar_a_old(game_root)
+                        if antiguo_backup is False:
+                            raise RuntimeError("no se pudo apartar el backup anterior")
+
+                        os.makedirs(os.path.dirname(game_root), exist_ok=True)
+                        try:
+                            os.replace(tmp_root, game_root)
+                        except Exception:
+                            # Rollback: si no podemos instalar la nueva carpeta,
+                            # recuperamos la versión anterior completa.
+                            if antiguo_backup and os.path.exists(antiguo_backup) and not os.path.exists(game_root):
+                                shutil.move(antiguo_backup, game_root)
+                            raise
+
+                        self._log("INFO", "Backup nuevo instalado: %s", game_root)
+                    except Exception as exc:
+                        if os.path.exists(tmp_root):
+                            shutil.rmtree(tmp_root, ignore_errors=True)
+                        self._log(
+                            "ERROR",
+                            "Backup transaccional fallido para %s: %s",
+                            nombre_limpio, exc, exc_info=True
+                        )
+                        fallidas.append(f"{nombre_limpio}: {exc}")
+                        juego_ok = False
+
+            # -----------------------------------------------------------------
+            # RESTORE
+            # -----------------------------------------------------------------
+            elif mode == 2:
+                # Cada origen se restaura desde su ubicación exacta dentro de
+                # la carpeta activa del juego. Las carpetas históricas con fecha
+                # no participan: solo se usa la carpeta "Borderlands 2" limpia.
+                for orig in origenes:
+                    if not orig:
+                        juego_ok = False
+                        continue
+
+                    ruta_real = orig if os.path.isabs(orig) else os.path.join(UP, orig)
+                    ruta_real = os.path.normpath(ruta_real).replace("\\", "/")
+                    dst, ruta_real = self.r_path(ruta_real, nombre_limpio)
+
+                    # Normalmente se restaura desde la carpeta activa. Si esa
+                    # carpeta fue borrada/renombrada, buscamos automáticamente
+                    # la copia histórica más reciente y conservamos su
+                    # estructura interna.
+                    if not os.path.exists(dst):
+                        game_root = self._backup_game_root(ruta_real, nombre_limpio)
+                        historico = self._buscar_backup_historico_mas_reciente(game_root)
+                        if historico:
+                            rel = os.path.relpath(dst, game_root)
+                            dst_historico = (
+                                historico if rel == "."
+                                else os.path.join(historico, rel)
+                            ).replace("\\", "/")
+                            if os.path.exists(dst_historico):
+                                self._log(
+                                    "WARNING",
+                                    "Restaurando %s desde histórico: %s",
+                                    nombre_limpio, dst_historico
+                                )
+                                dst = dst_historico
+                            else:
+                                fallidas.append(
+                                    f"{nombre_limpio}: no existe el save en la copia histórica ({dst_historico})"
+                                )
+                                juego_ok = False
+                                continue
+                        else:
+                            fallidas.append(f"{nombre_limpio}: no existe el backup ({dst})")
+                            juego_ok = False
+                            continue
+
+                    tmp = ruta_real.rstrip("/\\") + f".__tmp_restore_{uuid.uuid4().hex[:8]}"
+                    try:
+                        if os.path.exists(tmp):
+                            if os.path.isdir(tmp):
+                                shutil.rmtree(tmp, ignore_errors=True)
+                            else:
+                                os.remove(tmp)
+
+                        if not self.run_cmd(dst, tmp):
+                            raise RuntimeError("el backup no supera la verificación")
+
+                        antiguo_original = self.rotar_original_en_pc(ruta_real)
+                        if antiguo_original is False:
+                            raise RuntimeError("no se pudo apartar el save actual")
+
+                        os.makedirs(os.path.dirname(ruta_real), exist_ok=True)
+                        try:
+                            os.replace(tmp, ruta_real)
+                        except Exception:
+                            if antiguo_original and os.path.exists(antiguo_original) and not os.path.exists(ruta_real):
+                                shutil.move(antiguo_original, ruta_real)
+                            raise
+                        self._log("INFO", "Restauración completada: %s", ruta_real)
+                    except Exception as exc:
+                        if os.path.isdir(tmp):
+                            shutil.rmtree(tmp, ignore_errors=True)
+                        elif os.path.exists(tmp):
+                            try:
+                                os.remove(tmp)
+                            except Exception:
+                                pass
+                        self._log("ERROR", "Restauración fallida para %s: %s", nombre_limpio, exc, exc_info=True)
+                        fallidas.append(f"{nombre_limpio}: {exc}")
+                        juego_ok = False
+
+            if juego_ok:
+                exitosas += 1
 
         def finalizar_operacion():
-            accion_str = "respaldaron" if mode == 1 else "restauraron"
-            mb.showinfo("Éxito", f"¡Operación completada! Se {accion_str} {c} partidas marcadas.")
-            self.scan()
+            accion = "backup" if mode == 1 else "restauración"
+            if fallidas:
+                detalle = "\n".join(f"• {x}" for x in fallidas[:12])
+                extra = "" if len(fallidas) <= 12 else f"\n… y {len(fallidas)-12} errores más."
+                mb.showwarning(
+                    "Operación finalizada",
+                    f"{accion.capitalize()} completado.\n\n"
+                    f"Juegos correctos: {exitosas}/{total_juegos}\n"
+                    f"Problemas: {len(fallidas)}\n\n{detalle}{extra}"
+                )
+            else:
+                mb.showinfo(
+                    "Operación completada",
+                    f"¡{accion.capitalize()} completado!\n\n"
+                    f"Juegos correctos: {exitosas}/{total_juegos}"
+                )
+            self.ejecutar_en_hilo(self.scan)
 
         self.root.after(0, finalizar_operacion)
 
     def indexar_backups_en_disco(self):
+        """Indexa backups tanto en el formato nuevo agrupado como en el antiguo.
+
+        Formato nuevo:
+            Backup Saves/
+                My Games/
+                    Borderlands 2/
+                    Otro juego/
+                AppData/
+                    Roaming/...?
+
+        Cada carpeta de juego es un backup principal. Las carpetas old/old2/...
+        y las carpetas de versión con fecha quedan fuera del índice porque son
+        históricos; solo la carpeta con el nombre del juego a secas es la activa.
+        """
         self.backups_existentes.clear()
-        if os.path.exists(self.dest) and os.path.isdir(self.dest):
-            try:
-                for elemento in os.listdir(self.dest):
-                    if os.path.isdir(os.path.join(self.dest, elemento)) and elemento.lower().strip() not in ["old", "old2", "old3"]:
-                        self.backups_existentes.add(elemento.lower().strip())
-            except Exception:
-                pass
+        if not os.path.exists(self.dest) or not os.path.isdir(self.dest):
+            return
+
+        try:
+            for elemento in os.listdir(self.dest):
+                ruta_grupo = os.path.join(self.dest, elemento)
+                if not os.path.isdir(ruta_grupo):
+                    continue
+                if re.fullmatch(r"old\d*", elemento.strip(), re.I):
+                    continue
+
+                # Compatibilidad con el formato antiguo: Backup Saves/Juego
+                # se considera directamente un backup principal si contiene
+                # archivos (o subcarpetas de datos) y no parece ser un grupo.
+                hijos = []
+                try:
+                    hijos = [x for x in os.listdir(ruta_grupo)
+                             if os.path.isdir(os.path.join(ruta_grupo, x))]
+                except Exception:
+                    pass
+
+                archivos_directos = False
+                try:
+                    archivos_directos = any(
+                        os.path.isfile(os.path.join(ruta_grupo, x))
+                        for x in os.listdir(ruta_grupo)
+                    )
+                except Exception:
+                    pass
+
+                if archivos_directos or not hijos:
+                    self.backups_existentes.add(elemento.lower().strip())
+                    continue
+
+                # Formato nuevo: grupo/juego. Solo indexamos el segundo nivel.
+                # Los backups históricos fechados NO son el backup activo; el
+                # activo es siempre el que conserva el nombre del juego a secas.
+                for juego in hijos:
+                    ruta_juego = os.path.join(ruta_grupo, juego)
+                    if re.fullmatch(r"old\d*", juego.strip(), re.I):
+                        continue
+                    if self._es_backup_historico_con_fecha(juego):
+                        continue
+                    self.backups_existentes.add(
+                        os.path.join(elemento, juego).replace("\\", "/").lower().strip()
+                    )
+
+            self._log("INFO", "Backups indexados: %d", len(self.backups_existentes))
+        except Exception as exc:
+            self._log("ERROR", "No se pudo indexar backups: %s", exc, exc_info=True)
 
     def load_ocultos(self, path):
         if not os.path.exists(path):
@@ -1152,11 +1887,17 @@ class GestorPartidasLocal:
             self.root.after(0, lambda: self.lbl_db_status.config(text=texto, fg=color))
 
         avisar("⏳ Actualizando base de datos de saves (Arlequin-SaveHub)...", "#f1c40f")
-        self.manifest = descargar_manifest(forzar=forzar)
+        self.manifest, self.manifest_total_juegos = descargar_manifest(forzar=forzar)
         self.manifest_por_nombre, self.manifest_por_steam_id, self.manifest_por_gog_id = \
             construir_indices_manifest(self.manifest)
         if self.manifest:
-            avisar(f"✅ Base de datos actualizada ({len(self.manifest)} juegos conocidos)", "#2ecc71")
+            avisar(f"✅ Base de datos actualizada ({self.manifest_total_juegos:,} juegos conocidos)".replace(",", "."), "#2ecc71")
+            self._log(
+                "INFO",
+                "Base de datos cargada: %d juegos en YAML; %d juegos indexados.",
+                self.manifest_total_juegos,
+                len(self.manifest),
+            )
         else:
             avisar("⚠️ No se pudo descargar la base de datos (sin conexión). Reintenta más tarde.", "#e67e22")
 
@@ -1165,24 +1906,45 @@ class GestorPartidasLocal:
         self.scan()
 
     def buscar_en_manifest(self, info_juego):
-        """Devuelve la clave (nombre exacto tal cual está en el manifest) del
-        juego, intentando primero por ID de tienda (Steam/GOG, más fiable) y
-        si no por coincidencia de nombre."""
-        store = LAUNCHER_A_STORE.get(info_juego["launcher"])
-        id_juego = info_juego.get("id")
-        if store == "steam" and id_juego and id_juego in self.manifest_por_steam_id:
-            return self.manifest_por_steam_id[id_juego]
-        if store == "gog" and id_juego and id_juego in self.manifest_por_gog_id:
-            return self.manifest_por_gog_id[id_juego]
+        """Busca primero por identificador exacto y después por nombre.
+        Las coincidencias aproximadas requieren una similitud alta y única,
+        evitando cruzar juegos con nombres parecidos por simple subcadena."""
+        store = LAUNCHER_A_STORE.get(info_juego.get("launcher"))
+        id_juego = str(info_juego.get("id") or "").strip()
 
-        n = _norm(info_juego["nombre"])
+        if store == "steam" and id_juego:
+            encontrado = self.manifest_por_steam_id.get(id_juego)
+            if encontrado:
+                return encontrado
+        if store == "gog" and id_juego:
+            encontrado = self.manifest_por_gog_id.get(id_juego)
+            if encontrado:
+                return encontrado
+
+        n = _norm(info_juego.get("nombre"))
         if not n:
             return None
         if n in self.manifest_por_nombre:
             return self.manifest_por_nombre[n]
+
+        # Primero aceptamos equivalencia por palabras, pero solo si una
+        # ficha es claramente más parecida que las demás.
+        candidatos = []
         for k_norm, k_real in self.manifest_por_nombre.items():
-            if len(k_norm) >= 4 and (k_norm in n or n in k_norm):
-                return k_real
+            ratio = SequenceMatcher(None, n, k_norm).ratio()
+            if n in k_norm or k_norm in n:
+                ratio = max(ratio, min(len(n), len(k_norm)) / max(len(n), len(k_norm)))
+            if ratio >= 0.90:
+                candidatos.append((ratio, k_real))
+
+        if candidatos:
+            candidatos.sort(key=lambda x: x[0], reverse=True)
+            if len(candidatos) == 1 or candidatos[0][0] - candidatos[1][0] >= 0.03:
+                self._log("INFO", "Match aproximado: '%s' -> '%s' (%.1f%%)",
+                          info_juego.get("nombre"), candidatos[0][1], candidatos[0][0] * 100)
+                return candidatos[0][1]
+
+        self._log("DEBUG", "Sin coincidencia segura en manifest: %s", info_juego.get("nombre"))
         return None
 
     # -- NUEVO: diagnóstico manual de un juego concreto ---------------------
@@ -1511,7 +2273,7 @@ class GestorPartidasLocal:
                 if nombre_manual in self.ocultos:
                     continue
                 juegos_encontrados_global.add(nombre_manual)
-                ind = "[👍 Copia Ok] " if self.check_bkp(nombre_manual) else "               "
+                ind = "[👍 Copia Ok] " if self.check_bkp(nombre_manual, ruta_manual) else "               "
                 tam_str = self.get_folder_size_str(ruta_manual)
                 nv = f"{ind}{nombre_manual} ({tam_str})"
                 self.juegos[nv] = ruta_manual
@@ -1545,7 +2307,7 @@ class GestorPartidasLocal:
             elementos_a_insertar.append(f"--- {icono} {nombre_visual_launcher.upper()} ---")
             for nombre, rutas in elementos_carpeta:
                 juegos_encontrados_global.add(nombre)
-                ind = "[👍 Copia Ok] " if self.check_bkp(nombre) else "               "
+                ind = "[👍 Copia Ok] " if self.check_bkp(nombre, rutas) else "               "
                 tam_str = self.get_rutas_size_str(rutas)
                 nv = f"{ind}{nombre} ({tam_str} · {nombre_visual_launcher})"
                 # Si hay más de una carpeta real para este juego, se guardan
@@ -1630,25 +2392,30 @@ class GestorPartidasLocal:
         _ = sin_localizar  # variable ya no se usa para mostrar nada en pantalla
 
         lista_solo_backup = []
-        for juego_bkp in list(self.backups_existentes):
-            if juego_bkp not in [x.lower() for x in juegos_encontrados_global] and juego_bkp not in [x.lower() for x in self.ocultos]:
-                nombre_visual = juego_bkp
-                ruta_antigua_bkp = os.path.join(self.dest, juego_bkp)
-                if os.path.exists(ruta_antigua_bkp):
-                    try:
-                        nombre_visual = os.listdir(self.dest)[list(self.backups_existentes).index(juego_bkp)]
-                    except Exception:
-                        pass
-                lista_solo_backup.append(nombre_visual)
+        encontrados_norm = {str(x).lower() for x in juegos_encontrados_global}
+        ocultos_norm = {str(x).lower() for x in self.ocultos}
+        for rel_bkp in sorted(self.backups_existentes):
+            partes_bkp = [p for p in str(rel_bkp).replace("\\", "/").split("/") if p]
+            if not partes_bkp:
+                continue
+            nombre_bkp = partes_bkp[-1]
+            if nombre_bkp.lower() in encontrados_norm or nombre_bkp.lower() in ocultos_norm:
+                continue
+            ruta_bkp = os.path.join(self.dest, *partes_bkp).replace("\\", "/")
+            lista_solo_backup.append((rel_bkp, nombre_bkp, ruta_bkp))
+
         if lista_solo_backup:
-            lista_solo_backup.sort(key=lambda s: s.lower())
             elementos_a_insertar.append("")
             elementos_a_insertar.append("--- 💾 SOLO EN CARPETA BACKUP (DESINSTALADOS) ---")
-            for bkp_item in lista_solo_backup:
-                r_c = os.path.join(self.dest, bkp_item).replace("\\", "/")
+            for rel_bkp, nombre_bkp, r_c in lista_solo_backup:
                 tam_str = self.get_folder_size_str(r_c)
-                nv = f"[👍 Copia Ok] [Solo en Backup] {bkp_item} ({tam_str})"
-                self.juegos[nv] = os.path.join(UP, f"Documents/{bkp_item}").replace("\\", "/")
+                # Mostramos el grupo para que quede claro dónde está ordenado.
+                nv = f"[👍 Copia Ok] [Solo en Backup] {rel_bkp} ({tam_str})"
+                # Para una restauración de un juego desinstalado, el usuario
+                # deberá volver a añadir manualmente su carpeta de save; aquí
+                # conservamos una referencia útil al backup, sin asumir que
+                # Documents sea su ruta original.
+                self.juegos[nv] = r_c
                 elementos_a_insertar.append(nv)
                 total_items_detectados += 1
 
@@ -1661,9 +2428,105 @@ class GestorPartidasLocal:
 
         self.root.after(0, actualizar_interfaz_grafica)
 
+    def verificar_backups(self):
+        """Comprueba que las copias principales existen y tienen contenido."""
+        self.indexar_backups_en_disco()
+        total = len(self.backups_existentes)
+        validos = 0
+        problemas = []
+        for rel_bkp in sorted(self.backups_existentes):
+            partes_bkp = [p for p in str(rel_bkp).replace("\\", "/").split("/") if p]
+            ruta = os.path.join(self.dest, *partes_bkp)
+            try:
+                if not os.path.isdir(ruta):
+                    problemas.append(f"{rel_bkp}: no es una carpeta")
+                    continue
+                archivos = 0
+                for _, _, nombres in os.walk(ruta):
+                    archivos += len(nombres)
+                if archivos > 0:
+                    validos += 1
+                else:
+                    problemas.append(f"{rel_bkp}: carpeta vacía")
+            except Exception as exc:
+                problemas.append(f"{rel_bkp}: {exc}")
+        self._log("INFO", "Verificación de backups: %d/%d válidos", validos, total)
+
+        def mostrar():
+            if problemas:
+                detalle = "\n".join(f"• {x}" for x in problemas[:15])
+                extra = "" if len(problemas) <= 15 else f"\n… y {len(problemas)-15} problemas más."
+                mb.showwarning(
+                    "Verificación de backups",
+                    f"Backups válidos: {validos}/{total}\n"
+                    f"Problemas: {len(problemas)}\n\n{detalle}{extra}"
+                )
+            else:
+                mb.showinfo(
+                    "Verificación de backups",
+                    f"Todos los backups principales parecen válidos.\n\n"
+                    f"Carpetas verificadas: {total}"
+                )
+        self.root.after(0, mostrar)
+
+    def mostrar_detalles_seleccionado(self):
+        seleccion = self.get_sel_list()
+        if len(seleccion) != 1:
+            mb.showwarning("Detalles", "Selecciona exactamente un juego.")
+            return
+        fila = seleccion[0]
+        origen = self.juegos.get(fila)
+        nombre = self.limpiar_nombre_juego(fila)
+        if isinstance(origen, (list, tuple)):
+            rutas = list(origen)
+        elif origen:
+            rutas = [origen]
+        else:
+            rutas = []
+
+        partes = [f"Juego: {nombre}", ""]
+        if rutas:
+            for n, ruta in enumerate(rutas, 1):
+                tam = self.get_folder_size_str(ruta)
+                try:
+                    mod = self._formatear_fecha_es(os.path.getmtime(ruta))
+                except Exception:
+                    mod = "No disponible"
+                partes.append(f"Ruta {n}: {ruta}")
+                partes.append(f"  Tamaño: {tam}")
+                partes.append(f"  Última modificación: {mod}")
+                dst, _ = self.r_path(ruta, nombre)
+                partes.append(f"  Backup: {dst}")
+                partes.append(f"  Backup existe: {'Sí' if os.path.exists(dst) else 'No'}")
+                partes.append("")
+        else:
+            partes.append("No hay una ruta de save local respaldable.")
+        partes.append(f"Log: {LOG_FILE}")
+
+        mb.showinfo("Detalles del juego", "\n".join(partes))
+
     def __init__(self, root):
         self.root = root
-        root.title("Gestor de partidas guardadas by nox.bat")
+        # Sincronización: solo una tarea pesada puede modificar el estado
+        # interno o las copias a la vez.
+        self._worker_lock = threading.Lock()
+        self._size_cache = {}
+        self._logger = logging.getLogger("ArlequinSaveManager")
+        if not self._logger.handlers:
+            try:
+                os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+                handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+                handler.setFormatter(logging.Formatter(
+                    "%(asctime)s | %(levelname)s | %(message)s"
+                ))
+                self._logger.addHandler(handler)
+                self._logger.setLevel(logging.INFO)
+                self._logger.propagate = False
+            except Exception:
+                pass
+        self._log("INFO", "Aplicación iniciada.")
+        self.aplicar_icono_ventana(root)
+        root.title(f"Gestor de partidas guardadas by nox.bat  —  v{APP_VERSION}")
         root.geometry("820x900")
         root.minsize(820, 680)
         root.configure(bg="#2c3e50")
@@ -1677,11 +2540,15 @@ class GestorPartidasLocal:
         self.carpetas_sin_launcher = self.load_carpetas(M_C)
         # NUEVO: base de datos de rutas de saves (Arlequin-SaveHub)
         self.manifest = {}
+        self.manifest_total_juegos = 0
         self.manifest_por_nombre = {}
         self.manifest_por_steam_id = {}
         self.manifest_por_gog_id = {}
         tk.Label(root, text="Gestor de partidas guardadas", font=("Arial", 16, "bold"),
                  fg="#1abc9c", bg="#2c3e50").pack(pady=12)
+        self.lbl_update_status = tk.Label(root, text="🔍 Comprobando actualizaciones...",
+                                          fg="#95a5a6", bg="#2c3e50", font=("Arial", 8, "italic"))
+        self.lbl_update_status.pack(pady=(0, 2), fill="x", padx=20)
         f_db = tk.Frame(root, bg="#2c3e50")
         f_db.pack(pady=2, fill="x", padx=20)
         self.lbl_db_status = tk.Label(f_db, text="Ventana lista. Preparando actualización de la base de datos...",
@@ -1729,6 +2596,13 @@ class GestorPartidasLocal:
                                   bg="#3498db", fg="white", font=("Arial", 9, "bold"), bd=0,
                                   padx=8, pady=4, cursor="hand2")
         self.btn_scan.pack(side="left", padx=2)
+        tk.Button(f_s_btns, text="ℹ️ Detalles", command=self.mostrar_detalles_seleccionado,
+                  bg="#16a085", fg="white", font=("Arial", 9, "bold"), bd=0,
+                  padx=8, pady=4, cursor="hand2").pack(side="left", padx=2)
+        tk.Button(f_s_btns, text="🧪 Verificar", command=lambda: self.ejecutar_en_hilo(
+                      self.verificar_backups),
+                  bg="#8e44ad", fg="white", font=("Arial", 9, "bold"), bd=0,
+                  padx=8, pady=4, cursor="hand2").pack(side="left", padx=2)
         self.box = tk.Listbox(root, font=("Arial", 11), bg="#34495e", fg="white",
                               selectbackground="#1abc9c", bd=0, highlightthickness=0,
                               activestyle="none", selectmode="multiple")
@@ -1773,17 +2647,89 @@ class GestorPartidasLocal:
                   font=("Arial", 10, "bold"), bd=0, padx=15, pady=6, cursor="hand2").pack(side="left", padx=10)
         tk.Button(f_inf, text="🚪 Salir", command=root.quit, bg="#7f8c8d", fg="white",
                   font=("Arial", 10, "bold"), bd=0, padx=15, pady=6, cursor="hand2").pack(side="right")
+        tk.Label(f_inf, text=f"v{APP_VERSION}", font=("Arial", 9, "bold"),
+                 fg="#7f8c8d", bg="#2c3e50").pack(side="right", padx=(0, 8))
         tk.Label(f_inf, text="by nox.bat", font=("Arial", 11, "bold", "italic"),
                  fg="#bdc3c7", bg="#2c3e50").pack(pady=4)
         # IMPORTANTE: la ventana ya está construida y a punto de mostrarse
         # (root.mainloop() se llama justo después, fuera de esta clase).
         # Solo AHORA, en un hilo aparte para no bloquear la interfaz, se
         # descarga/actualiza la base de datos de Arlequin-SaveHub y se escanea.
-        self.ejecutar_en_hilo(self.indexar_backups_en_disco)
-        self.ejecutar_en_hilo(lambda: self.actualizar_bd_y_escanear(forzar=False))
+        def arranque():
+            self.indexar_backups_en_disco()
+            self.actualizar_bd_y_escanear(forzar=False)
+        self.ejecutar_en_hilo(arranque)
+        # Comprobación de actualizaciones: en su propio hilo (no comparte el
+        # candado de ejecutar_en_hilo) para que no espere a que termine el
+        # escaneo inicial ni lo bloquee.
+        threading.Thread(target=self.comprobar_actualizaciones_al_inicio, daemon=True).start()
+
+    def _set_estado_actualizacion(self, texto, color="#95a5a6"):
+        self.root.after(0, lambda: self.lbl_update_status.config(text=texto, fg=color))
+
+    def comprobar_actualizaciones_al_inicio(self):
+        """Se ejecuta en segundo plano al abrir el programa. Si hay una
+        versión más nueva publicada, pregunta al usuario (en el hilo
+        principal de Tkinter) si quiere actualizar."""
+        self._set_estado_actualizacion("🔍 Comprobando actualizaciones...", "#95a5a6")
+        try:
+            datos = comprobar_actualizacion_disponible()
+        except Exception as e:
+            self._log("ERROR", "Error comprobando actualizaciones: %s", e, exc_info=True)
+            self._set_estado_actualizacion(f"✅ Estás al día (v{APP_VERSION})", "#2ecc71")
+            return
+        if not datos or not datos.get("url_descarga", "").strip():
+            self._set_estado_actualizacion(f"✅ Estás al día (v{APP_VERSION})", "#2ecc71")
+            return
+
+        url_descarga = datos.get("url_descarga", "").strip()
+        version_remota = datos.get("version", "?")
+        novedades = datos.get("novedades", "").strip()
+        self._set_estado_actualizacion(f"🆕 Versión v{version_remota} disponible", "#f1c40f")
+
+        def preguntar():
+            texto = f"Hay una nueva versión disponible: v{version_remota}\n(tienes v{APP_VERSION})"
+            if novedades:
+                texto += f"\n\nNovedades:\n{novedades}"
+            texto += "\n\n¿Quieres actualizar ahora?"
+            if mb.askyesno("Actualización disponible", texto):
+                self.ejecutar_en_hilo(lambda: self._aplicar_actualizacion(url_descarga, version_remota))
+            else:
+                self._set_estado_actualizacion(
+                    f"🆕 Versión v{version_remota} disponible (pendiente)", "#f1c40f")
+
+        self.root.after(0, preguntar)
+
+    def _aplicar_actualizacion(self, url_descarga, version_remota="?"):
+        """Descarga la nueva versión y, si todo va bien, cierra la app para
+        que el script de actualización termine el reemplazo y la reabra."""
+        self._set_estado_actualizacion(f"⬇️ Descargando actualización v{version_remota}...", "#3498db")
+        cerrar_app = descargar_y_aplicar_actualizacion(url_descarga)
+        if cerrar_app:
+            self.root.after(0, self.root.destroy)
+        else:
+            self._set_estado_actualizacion(
+                f"⚠️ Arlequin no se pudo actualizar (sigues en v{APP_VERSION})", "#e74c3c")
+
+
+def _fijar_identidad_taskbar_windows():
+    """Sin esto, cuando el programa se lanza con python.exe (no como .exe
+    compilado), Windows suele agrupar la ventana bajo el icono genérico de
+    Python en la barra de tareas, aunque la ventana ya tenga su propio
+    icono.ico puesto con iconbitmap(). Al darle a la app un AppUserModelID
+    propio, Windows la trata como una aplicación independiente y usa el
+    icono real en la barra de tareas. No tiene efecto ni falla en Linux/Mac."""
+    if not _ES_WINDOWS:
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("noxbat.ArlequinSaveHub")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
+    _fijar_identidad_taskbar_windows()
     root = tk.Tk()
     app = GestorPartidasLocal(root)
     root.mainloop()
