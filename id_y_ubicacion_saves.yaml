@@ -84057,3 +84057,28 @@
 - name: 'PSI: Syberian Conflict'
   save_locations:
   - <base>/game/saves [os=windows]
+- name: 'Bioshock Infinite'
+  ids:
+    steam: 78230
+  save_locations:
+  - <winLocalAppData>/2K Games/BioShock Infinite [os=windows]
+- name: 'Dark Souls III'
+  ids:
+    steam: 489830
+  save_locations:
+  - <winLocalAppData>/BANDAI NAMCO Entertainment America Inc./DarkSoulsIII [os=windows]
+- name: 'Life is Strange'
+  ids:
+    gog: 1206306058
+  save_locations:
+  - <home>/AppData/Local/KingfisherGames/LifeIsStrange [os=windows]
+- name: 'Oxygen Not Included'
+  ids:
+    steam: 457080
+  save_locations:
+  - <winLocalAppData>/Klei/OxygenNotIncluded [os=windows]
+- name: 'The Witcher 3: Wild Hunt'
+  ids:
+    gog: 1206779760
+  save_locations:
+  - <home>/Documents/The Witcher 3 [os=windows]
