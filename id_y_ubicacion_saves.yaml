@@ -84159,3 +84159,63 @@
     gog: 1679826562
   save_locations:
   - <base>/sultan.sa* [os=windows]
+  
+- name: Hades
+  ids:
+    steam: 1056040
+  save_locations:
+  - <winLocalAppData>/Supergiant Games/Hades [os=windows]
+
+- name: Stardew Valley
+  ids:
+    steam: 413150
+  save_locations:
+  - <winAppData>/StardewValley/Saves [os=windows]
+
+- name: Hollow Knight
+  ids:
+    steam: 367520
+  save_locations:
+  - <winLocalAppData>/Team Cherry/Hollow Knight [os=windows]
+
+- name: Celeste
+  ids:
+    steam: 431960
+  save_locations:
+  - <winLocalAppData>/Maddy Makes Games/Celeste [os=windows]
+
+- name: Undertale
+  ids:
+    steam: 391540
+  save_locations:
+  - <winDocuments>/Undertale/SaveFiles [os=windows]
+
+- name: Disco Elysium Final Cut
+  ids:
+    steam: 632760
+  save_locations:
+  - <winLocalAppData>/ZA/UM/Disco Elysium The Final Cut/Data [os=windows]
+
+- name: Firewatch
+  ids:
+    steam: 244710
+  save_locations:
+  - <home>/AppData/Roaming/Firewatch/SavedGames [os=windows]
+
+- name: Pathologic 2
+  ids:
+    steam: 378040
+  save_locations:
+  - <winLocalAppData>/Pathologic 2/Saves [os=windows]
+
+- name: Sea of Stars
+  ids:
+    steam: 557090
+  save_locations:
+  - <winDocuments>/Sea of Stars/SaveData [os=windows]
+
+- name: Vampire Survivors
+  ids:
+    steam: 632330
+  save_locations:
+  - <winLocalAppData>/poncle.VampireSurvivors [os=windows]
