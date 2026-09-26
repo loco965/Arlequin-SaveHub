@@ -107,7 +107,7 @@ MANIFEST_MAX_AGE_SEG = 60 * 60 * 24 * 7  # refrescar la caché cada 7 días como
 #  VERSIÓN Y AUTOACTUALIZACIÓN (contra un version.json en el propio repo)
 # ---------------------------------------------------------------------------
 # Primera versión oficial: ya no es beta.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # Debe apuntar a un fichero "version.json" en la raíz del repo con este
 # formato (el mismo que ya tienes preparado):
@@ -1039,6 +1039,45 @@ class GestorPartidasLocal:
         except Exception:
             return str(texto).strip().lower()
 
+    # Carpetas contenedoras de Windows que agrupan varios juegos, cada uno
+    # en su propia subcarpeta (el mismo papel que ya cumple "My Games").
+    # Cuando la ruta de un juego pasa por una de estas carpetas, esa carpeta
+    # SIEMPRE debe quedar como primer nivel dentro de "Backup Saves" —igual
+    # que "My Games"— aunque el nombre de juego que coincide en la ruta esté
+    # más adentro. Por ejemplo, en "Saved Games/CD Projekt Red/<juego>" el
+    # nombre del juego puede coincidir dos niveles más abajo, pero
+    # "Saved Games" (mostrada por Windows como "Juegos guardados") debe
+    # seguir siendo el primer nivel, igual que pasa con "My Games".
+    CARPETAS_CONTENEDORAS_CONOCIDAS = ("my games", "saved games")
+
+    def _indice_raiz_juego(self, partes, nombre_juego_limpio):
+        """Índice, dentro de 'partes' (una ruta ya troceada en componentes),
+        que marca la carpeta que se considera la 'unidad de juego' completa:
+        la que se copia entera al hacer backup/restaurar y la que se archiva
+        como bloque al rotar copias antiguas.
+
+        Si la ruta pasa antes por una carpeta contenedora conocida (Saved
+        Games, My Games...), la subcarpeta que va justo debajo de ella es
+        esa unidad —y no el nombre de juego que pueda coincidir más
+        adentro—. Así no se pierde la carpeta contenedora ni se mezclan
+        entre sí los saves de varios juegos que compartan una misma
+        subcarpeta (p. ej. varios juegos de la misma editora dentro de
+        "Saved Games").
+
+        Si no hay ninguna carpeta contenedora conocida en la ruta, se usa
+        el comportamiento de siempre: la carpeta cuyo nombre coincide con
+        el nombre limpio del juego.
+        """
+        for i, parte in enumerate(partes):
+            if parte.strip().lower() in self.CARPETAS_CONTENEDORAS_CONOCIDAS and i + 1 < len(partes):
+                return i + 1
+
+        nombre_norm = _norm(nombre_juego_limpio)
+        for i in range(len(partes) - 1, -1, -1):
+            if _norm(partes[i]) == nombre_norm:
+                return i
+        return None
+
     def _grupo_backup_y_relativo(self, origen, nombre_juego_limpio):
         """
         Determina la ruta relativa del save dentro de Backup Saves.
@@ -1052,18 +1091,16 @@ class GestorPartidasLocal:
             Backup Saves/My Games/Borderlands 2/WillowGame/SaveData
 
         De esta forma, cuando se hace un backup nuevo, se renombra la carpeta
-        completa "Borderlands 2" y no "SaveData" o "WillowGame".
+        completa "Borderlands 2" y no "SaveData" o "WillowGame". Lo mismo se
+        aplica a carpetas contenedoras conocidas como "Saved Games" (ver
+        _indice_raiz_juego): "Saved Games/CD Projekt Red/..." queda como
+        "Backup Saves/Saved Games/CD Projekt Red/...".
         """
         so = origen if os.path.isabs(origen) else os.path.join(UP, origen)
         so = os.path.normpath(so).replace("\\", "/")
-        nombre_norm = _norm(nombre_juego_limpio)
         partes = [p for p in so.replace("\\", "/").split("/") if p]
 
-        indice_juego = None
-        for i in range(len(partes) - 1, -1, -1):
-            if _norm(partes[i]) == nombre_norm:
-                indice_juego = i
-                break
+        indice_juego = self._indice_raiz_juego(partes, nombre_juego_limpio)
 
         if indice_juego is not None:
             nombre_juego = partes[indice_juego]
@@ -1076,6 +1113,33 @@ class GestorPartidasLocal:
         nombre_origen = partes[-1] if partes else nombre_juego_limpio
         grupo = partes[-2] if len(partes) >= 2 else "Otros"
         return "/".join([grupo, nombre_juego_limpio, nombre_origen])
+
+    def _pc_game_root(self, origen, nombre_juego_limpio):
+        """Devuelve la carpeta raíz del juego tal y como está en el disco
+        real (el equivalente a _backup_game_root, pero del lado del PC en
+        vez de Backup Saves).
+
+        Ejemplo:
+            .../My Games/Borderlands 2/WillowGame/SaveData
+            -> .../My Games/Borderlands 2
+
+        Si la ruta pasa por una carpeta contenedora conocida (Saved Games,
+        My Games...) se usa la subcarpeta directa de esa carpeta como raíz,
+        igual que hace _grupo_backup_y_relativo (ver _indice_raiz_juego), de
+        forma que el origen copiado y el destino del backup siempre
+        coincidan en qué carpeta representa "el juego completo".
+
+        Si el nombre del juego no aparece en la ruta, no hay una carpeta
+        padre común que valga la pena versionar entera, así que se devuelve
+        la propia ruta de origen sin cambios (comportamiento anterior).
+        """
+        so = origen if os.path.isabs(origen) else os.path.join(UP, origen)
+        so = os.path.normpath(so).replace("\\", "/")
+        partes = [p for p in so.split("/") if p]
+        indice = self._indice_raiz_juego(partes, nombre_juego_limpio)
+        if indice is not None:
+            return "/".join(partes[:indice + 1])
+        return so
 
     def _backup_game_root(self, origen, nombre_juego_limpio):
         """Devuelve la carpeta raíz versionable del juego.
@@ -1350,25 +1414,201 @@ class GestorPartidasLocal:
             )
             return False
 
-    def rotar_original_en_pc(self, ruta_original_pc):
-        """Mueve el save original a _old/_old2/... y devuelve si tuvo éxito."""
-        if not os.path.exists(ruta_original_pc):
-            return None
-        contador = 1
-        while True:
-            sufijo = "_old" if contador == 1 else f"_old{contador}"
-            nueva_ruta_old = ruta_original_pc.rstrip("/\\") + sufijo
-            if not os.path.exists(nueva_ruta_old):
-                break
-            contador += 1
-        try:
-            shutil.move(ruta_original_pc, nueva_ruta_old)
-            self._log("INFO", "Save original archivado: %s -> %s", ruta_original_pc, nueva_ruta_old)
-            return nueva_ruta_old
-        except Exception as exc:
-            self._log("ERROR", "No se pudo archivar save original %s: %s",
-                      ruta_original_pc, exc, exc_info=True)
-            return False
+
+    def _listar_todos_los_backups(self, game_root_backup):
+        """Devuelve TODAS las copias de seguridad disponibles para un juego:
+        la copia activa (si existe) más todas las históricas fechadas que
+        haya junto a ella, ordenadas de la más reciente a la más antigua.
+
+        Cada elemento de la lista es una tupla (timestamp, etiqueta, ruta).
+        """
+        candidatos = []
+        if not game_root_backup:
+            return candidatos
+
+        game_root_norm = os.path.normpath(game_root_backup).replace("\\", "/")
+
+        if os.path.exists(game_root_norm):
+            try:
+                instante = os.path.getmtime(game_root_norm)
+            except OSError:
+                instante = None
+            etiqueta = "🟢 Copia actual" + (
+                f" ({self._formatear_fecha_es(instante)})" if instante else ""
+            )
+            candidatos.append((instante, etiqueta, game_root_norm))
+
+        padre = os.path.dirname(game_root_norm)
+        base = os.path.basename(game_root_norm)
+        prefijo = f"{base} ["
+        if os.path.isdir(padre):
+            try:
+                for nombre in os.listdir(padre):
+                    if not nombre.startswith(prefijo):
+                        continue
+                    ruta = os.path.join(padre, nombre).replace("\\", "/")
+                    if not os.path.isdir(ruta):
+                        continue
+                    m = re.match(
+                        rf"^{re.escape(base)} \["
+                        rf"(\d{{2}}-\d{{2}}-\d{{4}}\s\d{{2}}-\d{{2}}-\d{{2}})"
+                        rf"(?:\s+#\d+)?\]$",
+                        nombre, re.I
+                    )
+                    if not m:
+                        continue
+                    instante = self._parsear_fecha_backup_historico(m.group(1))
+                    etiqueta = "🗓️ Copia del " + (
+                        self._formatear_fecha_es(instante) if instante is not None else nombre
+                    )
+                    candidatos.append((instante, etiqueta, ruta))
+            except Exception as exc:
+                self._log("ERROR", "No se pudieron listar backups históricos de %s: %s",
+                          game_root_backup, exc, exc_info=True)
+
+        candidatos.sort(key=lambda x: (x[0] is None, -(x[0] or 0)))
+        return candidatos
+
+    def _elegir_backup_para_restaurar(self, nombre_juego, candidatos):
+        """Cuando hay más de una copia de seguridad disponible para un
+        juego, pregunta al usuario qué quiere hacer, con 3 opciones:
+          - Reciente: restaura la copia más reciente (a la izquierda).
+          - Cancelar: no restaura nada (a la derecha).
+          - Elegir cuál restaurar: abre un menú sencillo con la lista de
+            copias disponibles y botones Aceptar/Cancelar.
+
+        Se puede llamar desde el hilo de trabajo (backup/restauración): la
+        ventana se crea en el hilo principal de Tkinter y esta función
+        espera, de forma segura y sin congelar la interfaz, a que el
+        usuario responda.
+
+        Devuelve la ruta elegida, o None si el usuario cancela.
+        """
+        resultado = {"ruta": None}
+        evento = threading.Event()
+
+        def cerrar_y_liberar(ventana, ruta=None):
+            resultado["ruta"] = ruta
+            ventana.destroy()
+            evento.set()
+
+        def construir_ventana():
+            try:
+                top = tk.Toplevel(self.root)
+                top.title("Varios backups encontrados")
+                top.configure(bg="#2c3e50")
+                top.resizable(False, False)
+                top.transient(self.root)
+                top.grab_set()
+                top.protocol("WM_DELETE_WINDOW", lambda: cerrar_y_liberar(top, None))
+
+                tk.Label(
+                    top,
+                    text=(f"Se han encontrado {len(candidatos)} copias de seguridad para:\n"
+                          f"\"{nombre_juego}\"\n\n¿Qué copia quieres restaurar?"),
+                    font=("Arial", 11, "bold"), fg="white", bg="#2c3e50",
+                    justify="center", wraplength=360
+                ).pack(padx=20, pady=(18, 14))
+
+                f_fila = tk.Frame(top, bg="#2c3e50")
+                f_fila.pack(padx=20, fill="x")
+                f_fila.columnconfigure(0, weight=1, uniform="g")
+                f_fila.columnconfigure(1, weight=1, uniform="g")
+
+                tk.Button(
+                    f_fila, text="🕐 Reciente", font=("Arial", 10, "bold"),
+                    bg="#2ecc71", fg="white", bd=0, pady=8, cursor="hand2",
+                    command=lambda: cerrar_y_liberar(top, candidatos[0][2])
+                ).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+
+                tk.Button(
+                    f_fila, text="✖ Cancelar", font=("Arial", 10, "bold"),
+                    bg="#e74c3c", fg="white", bd=0, pady=8, cursor="hand2",
+                    command=lambda: cerrar_y_liberar(top, None)
+                ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
+                def abrir_elegir_manual():
+                    top.destroy()
+                    self._mostrar_menu_elegir_backup(nombre_juego, candidatos, resultado, evento)
+
+                tk.Button(
+                    top, text="📂 Elegir cuál restaurar", font=("Arial", 10, "bold"),
+                    bg="#3498db", fg="white", bd=0, pady=8, cursor="hand2",
+                    command=abrir_elegir_manual
+                ).pack(padx=20, pady=(8, 18), fill="x")
+
+                top.update_idletasks()
+                self.centrar_ventana(top, top.winfo_width(), top.winfo_height())
+            except Exception as exc:
+                self._log("ERROR", "No se pudo mostrar el selector de backups: %s", exc, exc_info=True)
+                # Si la ventana falla por lo que sea, mejor no bloquear la
+                # operación entera: se usa la copia más reciente por defecto.
+                resultado["ruta"] = candidatos[0][2] if candidatos else None
+                evento.set()
+
+        self.root.after(0, construir_ventana)
+        evento.wait()
+        return resultado["ruta"]
+
+    def _mostrar_menu_elegir_backup(self, nombre_juego, candidatos, resultado, evento):
+        """Menú sencillo para elegir manualmente qué copia de seguridad
+        restaurar, con una lista y botones Aceptar/Cancelar. Siempre se
+        llama desde el hilo principal de Tkinter (ver
+        _elegir_backup_para_restaurar)."""
+        top = tk.Toplevel(self.root)
+        top.title("Elegir copia a restaurar")
+        top.configure(bg="#2c3e50")
+        top.resizable(False, False)
+        top.transient(self.root)
+        top.grab_set()
+
+        def cerrar_y_liberar(ruta=None):
+            resultado["ruta"] = ruta
+            top.destroy()
+            evento.set()
+
+        top.protocol("WM_DELETE_WINDOW", lambda: cerrar_y_liberar(None))
+
+        tk.Label(
+            top, text=f"\"{nombre_juego}\"\nSelecciona la copia que quieres restaurar:",
+            font=("Arial", 11, "bold"), fg="white", bg="#2c3e50",
+            justify="center", wraplength=380
+        ).pack(padx=20, pady=(18, 10))
+
+        box = tk.Listbox(
+            top, font=("Arial", 10), bg="#34495e", fg="white",
+            selectbackground="#1abc9c", bd=0, highlightthickness=0,
+            activestyle="none", selectmode="browse", width=48,
+            height=max(3, min(8, len(candidatos)))
+        )
+        box.pack(padx=20, pady=(0, 12), fill="both", expand=True)
+        for _, etiqueta, _ in candidatos:
+            box.insert(tk.END, etiqueta)
+        box.selection_set(0)
+
+        f_btn = tk.Frame(top, bg="#2c3e50")
+        f_btn.pack(padx=20, pady=(0, 18), fill="x")
+        f_btn.columnconfigure(0, weight=1, uniform="g")
+        f_btn.columnconfigure(1, weight=1, uniform="g")
+
+        def aceptar():
+            sel = box.curselection()
+            if not sel:
+                mb.showwarning("Atención", "Selecciona una copia de la lista.", parent=top)
+                return
+            cerrar_y_liberar(candidatos[sel[0]][2])
+
+        tk.Button(f_btn, text="✔ Aceptar", font=("Arial", 10, "bold"), bg="#2ecc71",
+                  fg="white", bd=0, pady=8, cursor="hand2", command=aceptar
+                  ).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        tk.Button(f_btn, text="✖ Cancelar", font=("Arial", 10, "bold"), bg="#e74c3c",
+                  fg="white", bd=0, pady=8, cursor="hand2", command=lambda: cerrar_y_liberar(None)
+                  ).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
+        top.update_idletasks()
+        ancho = max(top.winfo_width(), 420)
+        alto = max(top.winfo_height(), 320)
+        self.centrar_ventana(top, ancho, alto)
 
     def mostrar_submenu_ocultos(self):
         if not self.ocultos:
@@ -1606,6 +1846,7 @@ class GestorPartidasLocal:
         exitosas = 0
         fallidas = []
         total_juegos = 0
+        restauracion_cancelada = False
 
         for tag_seleccionado in lista_seleccionados:
             if tag_seleccionado not in self.juegos:
@@ -1623,10 +1864,13 @@ class GestorPartidasLocal:
             # BACKUP
             # -----------------------------------------------------------------
             if mode == 1:
-                # Agrupamos los orígenes por carpeta de juego. Esto es importante
-                # para que una nueva copia renombre "Borderlands 2" completo y
-                # NO una subcarpeta como "SaveData" o "WillowGame".
-                grupos = {}
+                # Se copia la carpeta COMPLETA del juego tal cual está en su
+                # ubicación de búsqueda (My Games, Saved Games, AppData...),
+                # con todo lo que tenga dentro (Config, Logs, SaveData,
+                # PersistentDownloadDir, etc.), no solo la subcarpeta de save
+                # que apunta el manifest. Si varios orígenes del mismo juego
+                # caen dentro de la misma carpeta raíz, solo se copia una vez.
+                raices_vistas = set()
                 for orig in origenes:
                     if not orig:
                         juego_ok = False
@@ -1637,30 +1881,26 @@ class GestorPartidasLocal:
                         fallidas.append(f"{nombre_limpio}: origen no existe ({ruta_real})")
                         juego_ok = False
                         continue
-                    dst, ruta_real = self.r_path(ruta_real, nombre_limpio)
-                    game_root = self._backup_game_root(ruta_real, nombre_limpio)
-                    grupos.setdefault(game_root, []).append((ruta_real, dst))
 
-                for game_root, elementos in grupos.items():
-                    if not juego_ok and not elementos:
+                    raiz_pc = self._pc_game_root(ruta_real, nombre_limpio)
+                    if raiz_pc in raices_vistas:
                         continue
+                    raices_vistas.add(raiz_pc)
 
+                    game_root = self._backup_game_root(ruta_real, nombre_limpio)
                     tmp_root = game_root + f".__tmp_game_{uuid.uuid4().hex[:8]}"
                     antiguo_backup = None
                     try:
                         if os.path.exists(tmp_root):
                             shutil.rmtree(tmp_root, ignore_errors=True)
 
-                        # Primero construimos el backup COMPLETO en una carpeta
-                        # temporal. Así nunca dejamos un backup a medias.
-                        for ruta_real, dst in elementos:
-                            rel = os.path.relpath(dst, game_root)
-                            tmp_dst = os.path.join(tmp_root, rel).replace("\\", "/")
-                            if not self.run_cmd(ruta_real, tmp_dst):
-                                raise RuntimeError(f"fallo copiando {ruta_real}")
+                        # Primero se copia la carpeta del juego ENTERA a una
+                        # carpeta temporal. Así nunca dejamos un backup a medias.
+                        if not self.run_cmd(raiz_pc, tmp_root):
+                            raise RuntimeError(f"fallo copiando {raiz_pc}")
 
-                        # Solo después de verificar todas las fuentes se archiva
-                        # la versión anterior completa del juego.
+                        # Solo después de verificar la copia se archiva la
+                        # versión anterior completa del juego.
                         antiguo_backup = self.rotar_a_old(game_root)
                         if antiguo_backup is False:
                             raise RuntimeError("no se pudo apartar el backup anterior")
@@ -1691,9 +1931,14 @@ class GestorPartidasLocal:
             # RESTORE
             # -----------------------------------------------------------------
             elif mode == 2:
-                # Cada origen se restaura desde su ubicación exacta dentro de
-                # la carpeta activa del juego. Las carpetas históricas con fecha
-                # no participan: solo se usa la carpeta "Borderlands 2" limpia.
+                # Simétrico al backup: se restaura la carpeta COMPLETA del
+                # juego (todo lo que se guardó en el backup), no solo una
+                # subcarpeta concreta. Si ya había algo en el destino, se
+                # archiva con fecha y hora antes de pegar la restaurada, así
+                # nunca se pierde. Esto se aplica igual a cualquier juego con
+                # varias carpetas de búsqueda (My Games, Saved Games,
+                # AppData...) sin tratarlos caso por caso.
+                raices_vistas = set()
                 for orig in origenes:
                     if not orig:
                         juego_ok = False
@@ -1701,70 +1946,75 @@ class GestorPartidasLocal:
 
                     ruta_real = orig if os.path.isabs(orig) else os.path.join(UP, orig)
                     ruta_real = os.path.normpath(ruta_real).replace("\\", "/")
-                    dst, ruta_real = self.r_path(ruta_real, nombre_limpio)
+                    _dst_ignorado, ruta_real = self.r_path(ruta_real, nombre_limpio)
 
-                    # Normalmente se restaura desde la carpeta activa. Si esa
-                    # carpeta fue borrada/renombrada, buscamos automáticamente
-                    # la copia histórica más reciente y conservamos su
-                    # estructura interna.
-                    if not os.path.exists(dst):
-                        game_root = self._backup_game_root(ruta_real, nombre_limpio)
-                        historico = self._buscar_backup_historico_mas_reciente(game_root)
-                        if historico:
-                            rel = os.path.relpath(dst, game_root)
-                            dst_historico = (
-                                historico if rel == "."
-                                else os.path.join(historico, rel)
-                            ).replace("\\", "/")
-                            if os.path.exists(dst_historico):
-                                self._log(
-                                    "WARNING",
-                                    "Restaurando %s desde histórico: %s",
-                                    nombre_limpio, dst_historico
-                                )
-                                dst = dst_historico
-                            else:
-                                fallidas.append(
-                                    f"{nombre_limpio}: no existe el save en la copia histórica ({dst_historico})"
-                                )
-                                juego_ok = False
-                                continue
-                        else:
-                            fallidas.append(f"{nombre_limpio}: no existe el backup ({dst})")
+                    raiz_pc = self._pc_game_root(ruta_real, nombre_limpio)
+                    if raiz_pc in raices_vistas:
+                        continue
+                    raices_vistas.add(raiz_pc)
+
+                    game_root_backup_base = self._backup_game_root(ruta_real, nombre_limpio)
+
+                    # Se listan TODAS las copias disponibles para este juego
+                    # (la activa + las históricas fechadas). Si solo hay una,
+                    # se usa directamente como antes. Si hay más de una, se
+                    # le pregunta al usuario cuál quiere restaurar en vez de
+                    # asumir siempre la más reciente.
+                    candidatos_backup = self._listar_todos_los_backups(game_root_backup_base)
+
+                    if not candidatos_backup:
+                        fallidas.append(f"{nombre_limpio}: no existe el backup ({game_root_backup_base})")
+                        juego_ok = False
+                        continue
+
+                    if len(candidatos_backup) == 1:
+                        game_root_backup = candidatos_backup[0][2]
+                    else:
+                        elegido = self._elegir_backup_para_restaurar(nombre_limpio, candidatos_backup)
+                        if not elegido:
+                            self._log("INFO", "Restauración de %s cancelada por el usuario.", nombre_limpio)
+                            fallidas.append(f"{nombre_limpio}: restauración cancelada por el usuario")
                             juego_ok = False
-                            continue
+                            restauracion_cancelada = True
+                            break
+                        game_root_backup = elegido
+                        self._log(
+                            "INFO", "Restaurando %s desde la copia elegida por el usuario: %s",
+                            nombre_limpio, game_root_backup
+                        )
 
-                    tmp = ruta_real.rstrip("/\\") + f".__tmp_restore_{uuid.uuid4().hex[:8]}"
+                    tmp_root = raiz_pc + f".__tmp_restore_game_{uuid.uuid4().hex[:8]}"
+                    archivo_raiz = None
                     try:
-                        if os.path.exists(tmp):
-                            if os.path.isdir(tmp):
-                                shutil.rmtree(tmp, ignore_errors=True)
-                            else:
-                                os.remove(tmp)
+                        if os.path.exists(tmp_root):
+                            shutil.rmtree(tmp_root, ignore_errors=True)
 
-                        if not self.run_cmd(dst, tmp):
-                            raise RuntimeError("el backup no supera la verificación")
+                        # Primero se copia el backup ENTERO a una carpeta
+                        # temporal, verificando la copia. Así nunca se llega
+                        # a tocar el save actual si algo falla a mitad de
+                        # camino.
+                        if not self.run_cmd(game_root_backup, tmp_root):
+                            raise RuntimeError(f"el backup no supera la verificación ({game_root_backup})")
 
-                        antiguo_original = self.rotar_original_en_pc(ruta_real)
-                        if antiguo_original is False:
-                            raise RuntimeError("no se pudo apartar el save actual")
+                        # Ya con todo verificado: si ya había una carpeta del
+                        # juego en el PC, se archiva ENTERA con fecha y hora
+                        # antes de pegar la restaurada.
+                        if os.path.exists(raiz_pc):
+                            archivo_raiz = self._nombre_backup_historico(raiz_pc)
+                            shutil.move(raiz_pc, archivo_raiz)
 
-                        os.makedirs(os.path.dirname(ruta_real), exist_ok=True)
+                        os.makedirs(os.path.dirname(raiz_pc), exist_ok=True)
                         try:
-                            os.replace(tmp, ruta_real)
+                            os.replace(tmp_root, raiz_pc)
                         except Exception:
-                            if antiguo_original and os.path.exists(antiguo_original) and not os.path.exists(ruta_real):
-                                shutil.move(antiguo_original, ruta_real)
+                            if archivo_raiz and os.path.exists(archivo_raiz) and not os.path.exists(raiz_pc):
+                                shutil.move(archivo_raiz, raiz_pc)
                             raise
-                        self._log("INFO", "Restauración completada: %s", ruta_real)
+
+                        self._log("INFO", "Restauración completada: %s", raiz_pc)
                     except Exception as exc:
-                        if os.path.isdir(tmp):
-                            shutil.rmtree(tmp, ignore_errors=True)
-                        elif os.path.exists(tmp):
-                            try:
-                                os.remove(tmp)
-                            except Exception:
-                                pass
+                        if os.path.exists(tmp_root):
+                            shutil.rmtree(tmp_root, ignore_errors=True)
                         self._log("ERROR", "Restauración fallida para %s: %s", nombre_limpio, exc, exc_info=True)
                         fallidas.append(f"{nombre_limpio}: {exc}")
                         juego_ok = False
@@ -1772,7 +2022,18 @@ class GestorPartidasLocal:
             if juego_ok:
                 exitosas += 1
 
+            if restauracion_cancelada:
+                break
+
         def finalizar_operacion():
+            if restauracion_cancelada:
+                mb.showinfo(
+                    "Restauración cancelada",
+                    "Restauración cancelada por el usuario.\n\n"
+                    f"Juegos restaurados antes de cancelar: {exitosas}/{total_juegos}"
+                )
+                self.ejecutar_en_hilo(self.scan)
+                return
             accion = "backup" if mode == 1 else "restauración"
             if fallidas:
                 detalle = "\n".join(f"• {x}" for x in fallidas[:12])
@@ -2728,8 +2989,96 @@ def _fijar_identidad_taskbar_windows():
         pass
 
 
+def _es_admin_windows():
+    """Devuelve True/False si se puede determinar si el proceso actual tiene
+    privilegios de administrador en Windows, o None si no se ha podido
+    comprobar (por ejemplo, fuera de Windows)."""
+    if not _ES_WINDOWS:
+        return None
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return None
+
+
+def verificar_permisos_criticos(root):
+    """Comprueba, nada más arrancar, que el programa puede realmente leer y
+    escribir en las carpetas que necesita.
+
+    El .exe se compila con --uac-admin, lo que en condiciones normales hace
+    que Windows pida elevación antes de dejar arrancar el programa. Pero hay
+    casos raros en los que eso no basta:
+      - El UAC está desactivado y la cuenta es estándar (no administrador):
+        según la configuración de Windows, el programa puede terminar
+        ejecutándose SIN privilegios de administrador en vez de bloquearse.
+      - Alguna política de grupo o antivirus interfiere con la elevación.
+    Si eso pasa y no se comprueba nada, el programa se abriría con normalidad
+    y fallaría más tarde, a mitad de un backup o una restauración, con un
+    error críptico. Aquí se hace una prueba de escritura real, al principio,
+    para poder avisar de forma amigable y clara si algo no va a funcionar.
+
+    Devuelve True si se puede continuar (todo bien, o el usuario decide
+    continuar de todas formas) y False si el usuario prefiere cerrar el
+    programa.
+    """
+    if not _ES_WINDOWS:
+        return True
+
+    carpetas_a_probar = [APP_GAMESAVES_DIR, BKP]
+    carpetas_con_problemas = []
+
+    for carpeta in carpetas_a_probar:
+        try:
+            os.makedirs(carpeta, exist_ok=True)
+            ruta_prueba = os.path.join(carpeta, f".permtest_{uuid.uuid4().hex[:8]}.tmp")
+            with open(ruta_prueba, "w") as f:
+                f.write("test")
+            os.remove(ruta_prueba)
+        except Exception as exc:
+            carpetas_con_problemas.append((carpeta, exc))
+
+    if not carpetas_con_problemas:
+        return True
+
+    es_admin = _es_admin_windows()
+    detalle = "\n".join(f"• {c}" for c, _ in carpetas_con_problemas)
+    aviso_admin = ""
+    if es_admin is False:
+        aviso_admin = (
+            "\n\nParece que el programa NO se está ejecutando como "
+            "administrador. Esto puede pasar si el Control de Cuentas de "
+            "Usuario (UAC) está desactivado, si tu cuenta es una cuenta "
+            "estándar sin acceso a una contraseña de administrador, o si "
+            "se canceló el aviso de permisos al abrir el programa."
+        )
+
+    mensaje = (
+        "Arlequin SaveHub no tiene permisos suficientes para escribir en "
+        f"estas carpetas:\n\n{detalle}{aviso_admin}\n\n"
+        "Prueba a cerrar el programa y volver a abrirlo haciendo clic derecho "
+        "sobre él y eligiendo \"Ejecutar como administrador\". Si el problema "
+        "continúa, revisa los permisos de esas carpetas o la configuración "
+        "de UAC de tu cuenta de Windows.\n\n"
+        "¿Quieres continuar de todas formas? Es posible que algunas "
+        "funciones (guardar copias, escanear, etc.) fallen."
+    )
+
+    try:
+        return mb.askyesno("Permisos insuficientes", mensaje, parent=root)
+    except Exception:
+        # Si ni siquiera se puede mostrar el aviso, dejamos continuar: es
+        # preferible intentarlo a bloquear el programa por completo.
+        return True
+
+
 if __name__ == "__main__":
     _fijar_identidad_taskbar_windows()
     root = tk.Tk()
+    root.withdraw()
+    if not verificar_permisos_criticos(root):
+        root.destroy()
+        sys.exit(0)
+    root.deiconify()
     app = GestorPartidasLocal(root)
     root.mainloop()
