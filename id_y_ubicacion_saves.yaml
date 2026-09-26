@@ -84082,3 +84082,80 @@
     gog: 1206779760
   save_locations:
   - <home>/Documents/The Witcher 3 [os=windows]
+- name: 'My Summer Car'
+  ids:
+    steam: 263900
+  save_locations:
+  - <winLocalAppData>/MySummerCar [os=windows]
+- name: 'My Time at Portia'
+  ids:
+    gog: 1470529852
+  save_locations:
+  - <home>/Documents/Portia Saves [os=windows]
+- name: 'Yggdra Union'
+  ids:
+    steam: 2107860
+  save_locations:
+  - <winDocuments>/sting/Yggdra Union/savedata/CONTINUE*.DAT [os=windows]
+  - <winDocuments>/sting/Yggdra Union/savedata/STORY*.DAT [os=windows]
+  - <winDocuments>/sting/Yggdra Union/savedata/SYSTEM.DAT [os=windows]
+
+- name: 'YIIK: A Postmodern RPG'
+  ids:
+    steam: 459080
+    gog: 2005058230
+  save_locations:
+  - <home>/AppData/LocalLow/AckkStudios/YIIK_ A Postmodern RPG [os=windows]
+
+- name: 'Yesterday Origins'
+  ids:
+    steam: 465280
+    gog: 1576683029
+  save_locations:
+  - <home>/AppData/LocalLow/PenduloStudios/Yesterday Origins/YesterdayOriginsSaveGame*.yo [os=windows]
+
+- name: 'Aragami 2'
+  ids:
+    steam: 1158370
+    gog: 1772522891
+  save_locations:
+  - <winLocalAppData>/Packages/34421DavidLen.Aragami2_ad789ek20a95w/SystemAppData/wgs [os=windows, store=microsoft]
+  - <winLocalAppData>/gameid/storage/shared/Files/Aragami2.lin [os=windows, store=gog]
+
+- name: 'Yokai s Secret'
+  ids:
+    steam: 1146630
+  save_locations:
+  - <winDocuments>/Yokai's Secret [os=windows]
+
+- name: 'Aragami'
+  ids:
+    steam: 280160
+    gog: 1846445578
+  save_locations:
+  - <home>/AppData/LocalLow/Lince Works/Aragami/saveData.dat [os=windows]
+
+- name: 'YU-NO: A Girl Who Chants Love at the Bound of this World (2017)'
+  ids:
+    steam: 912450
+  save_locations:
+  - <winDocuments>/My Games/mages_steam/YUNO/eng [os=windows]
+  - <winDocuments>/My Games/mages_steam/YUNO/jpn [os=windows]
+
+- name: 'Yet Another Zombie Defense'
+  ids:
+    steam: 270550
+  save_locations:
+  - <winDocuments>/SavedGames/YetAnotherZombieDefense [os=windows]
+
+- name: 'Yum Yum Cookstar'
+  ids:
+    steam: 1827430
+  save_locations:
+  - <winAppData>/YumYumCookstar/SaveGames [os=windows]
+
+- name: 'Arabic Nights'
+  ids:
+    gog: 1679826562
+  save_locations:
+  - <base>/sultan.sa* [os=windows]
