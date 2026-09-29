@@ -1,5 +1,6 @@
 {
-  "version": "1.1.3",
-  "url_descarga": "https://github.com/loco965/Arlequin-SaveHub/releases/latest/download/Arlequin_SaveHub.exe",
-  "novedades": "Nueva versión 1.1.3: integridad de backups mediante ash_backup.json y SHA-256; validación de rutas y espacio libre; vista previa e integridad antes de restaurar; evidencia y nivel de confianza de detecciones; Estadísticas BD y tiempo del último escaneo; Instrucciones de uso; elección inicial de la ubicación de backups; aviso ante sincronización activa de OneDrive, Dropbox y Google Drive; y mejoras de diagnóstico y del botón Donar."
+  "version": "1.1.7",
+  "url_descarga": "https://github.com/aitor965/Arlequin-SaveHub/releases/latest/download/Arlequin_SaveHub.exe",
+  "sha256": "1196e4f028051df641177a73d7d3bbd3c9ceb25e20bb3773eddd235066724e70",
+  "novedades": "Nueva versión 1.1.7 (el proyecto se ha trasladado a github.com/aitor965/Arlequin-SaveHub):\n• Partidas guardadas en el registro de Windows: se detectan, se respaldan y se restauran.\n• La lista muestra cuántas copias tiene cada juego en local y en la nube.\n• Al descargar de la nube puedes elegir qué copia quieres.\n• Copia \"Antes de restaurar\" para poder deshacer una restauración.\n• Opciones reorganizadas (General, Local y Nube) y opciones nuevas: avisos, verificación semanal, excluir archivos, juegos online, no subir con OBS abierto.\n• Búsqueda de saves entre 4 y 6 veces más rápida y varias correcciones de fiabilidad.\n• Base de datos ArlequinGameDB v1.4: 50.240 juegos."
 }
